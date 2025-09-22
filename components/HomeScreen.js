@@ -73,13 +73,13 @@ const HomeScreen = ({ navigation }) => {
 
 			{/* Feature Grid */}
 			<View style={styles.featureGrid}>
-				<FeatureCard icon={<RobotIcon width={32} height={32} />} label={t('aiAdvisory')} onClick={() => navigation.navigate('Advisory')} />
-					<FeatureCard icon={<UploadCloudIcon width={32} height={32} />} label={t('uploadImage')} onClick={() => {
+				<FeatureCard icon={<RobotIcon width={48} height={48} />} label={t('aiAdvisory')} onClick={() => navigation.navigate('Advisory')} />
+					<FeatureCard icon={<UploadCloudIcon width={48} height={48} />} label={t('uploadImage')} onClick={() => {
 						// Navigate to the Disease detection flow registered on the stack
 						navigation.navigate('Disease');
 					}} />
-					<FeatureCard icon={<MarketIcon width={32} height={32} />} label={t('market')} onClick={() => navigation.navigate('Market')} />
-					<FeatureCard icon={<OfflineIcon width={32} height={32} />} label={t('offlineMode')} onClick={() => navigation.navigate('Home')} />
+					<FeatureCard icon={<MarketIcon width={48} height={48} />} label={t('market')} onClick={() => navigation.navigate('Market')} />
+					<FeatureCard icon={<OfflineIcon width={48} height={48} />} label={t('offlineMode')} onClick={() => navigation.navigate('Home')} />
 			</View>
 
 			{/* Voice Assistant Button */}
@@ -147,23 +147,25 @@ const styles = StyleSheet.create({
 	},
 	featureCard: {
 		backgroundColor: '#fff',
-		padding: 16,
-		borderRadius: 16,
-		shadowColor: '#000',
-		shadowOpacity: 0.1,
-		shadowRadius: 6,
-		shadowOffset: { width: 0, height: 2 },
-		elevation: 3,
+		padding: 20,
+		borderRadius: 20,
+		shadowColor: '#16a34a',
+		shadowOpacity: 0.15,
+		shadowRadius: 12,
+		shadowOffset: { width: 0, height: 4 },
+		elevation: 8,
 		width: '47%',
 		aspectRatio: 1,
 		alignItems: 'center',
-		justifyContent: 'center'
+		justifyContent: 'center',
+		borderWidth: 1,
+		borderColor: '#f0fdf4',
 	},
 	disabled: {
 		opacity: 0.6
 	},
 	iconWrapper: {
-		marginBottom: 8
+		marginBottom: 12
 	},
 	featureLabel: {
 		fontWeight: '600',

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Text } from 'react-native';
+import { Text, View } from 'react-native';
 
 // Simple emoji-based icons as placeholders for the original SVG icons.
 // Export every icon name the mobile components expect so imports don't resolve to `undefined`.
@@ -24,6 +24,12 @@ export const CloudIcon = ({ style }) => <Text style={style}>☁️</Text>;
 export const SoilHealthIcon = ({ style }) => <Text style={style}>🌱</Text>;
 export const AdvisoryDataIcon = ({ style }) => <Text style={style}>📊</Text>;
 
+// Onboarding screen icons - Simple and minimal
+export const WeatherIcon = ({ style }) => <Text style={style}>☀️</Text>;
+export const DiseaseIcon = ({ style }) => <Text style={style}>🔍</Text>;
+export const AdvisoryIcon = ({ style }) => <Text style={style}>💬</Text>;
+export const EditIcon = ({ style }) => <Text style={style}>✏️</Text>;
+
 export default {
   HomeIcon,
   ChatBubbleIcon,
@@ -43,4 +49,8 @@ export default {
   CloudIcon,
   SoilHealthIcon,
   AdvisoryDataIcon,
+  WeatherIcon,
+  DiseaseIcon,
+  AdvisoryIcon,
+  EditIcon,
 };

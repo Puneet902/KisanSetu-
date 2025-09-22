@@ -48,6 +48,17 @@ const translations = {
     uploadImage: 'Upload Image',
     offlineMode: 'Offline Mode',
     voiceAssistant: 'Voice Assistant',
+  // Onboarding steps
+  onboardingWeatherTitle: 'Weather Forecasts',
+  onboardingWeatherDesc: 'Get real-time weather updates to plan your farming activities.',
+  onboardingMarketTitle: 'Market Prices',
+  onboardingMarketDesc: 'Stay updated with the latest crop prices from nearby markets.',
+  onboardingDiseaseTitle: 'Disease Detection',
+  onboardingDiseaseDesc: 'Upload a photo of your crop to detect diseases instantly.',
+  onboardingAdvisoryTitle: 'AI Advisory',
+  onboardingAdvisoryDesc: 'Ask our AI expert any farming-related question and get instant advice.',
+  skip: 'Skip',
+  next: 'Next',
   },
   hi: {
     appName: 'किसानसेतु',
@@ -97,6 +108,17 @@ const translations = {
     uploadImage: 'छवि अपलोड करें',
     offlineMode: 'ऑफ़लाइन मोड',
     voiceAssistant: 'वॉयस असिस्टेंट',
+  // Onboarding steps
+  onboardingWeatherTitle: 'मौसम पूर्वानुमान',
+  onboardingWeatherDesc: 'अपने कृषि कार्यों की योजना बनाने के लिए रीयल-टाइम मौसम अपडेट प्राप्त करें।',
+  onboardingMarketTitle: 'बाजार मूल्य',
+  onboardingMarketDesc: 'आस-पास के बाजारों से नवीनतम फसल मूल्यों की जानकारी रखें।',
+  onboardingDiseaseTitle: 'रोग पहचान',
+  onboardingDiseaseDesc: 'रोगों का तुरंत पता लगाने के लिए अपनी फसल की फोटो अपलोड करें।',
+  onboardingAdvisoryTitle: 'एआई सलाह',
+  onboardingAdvisoryDesc: 'हमारे एआई विशेषज्ञ से कोई भी कृषि संबंधी प्रश्न पूछें और तुरंत सलाह प्राप्त करें।',
+  skip: 'छोड़ें',
+  next: 'आगे',
   },
   ta: {
     appName: 'KisanSetu',
@@ -146,6 +168,17 @@ const translations = {
     uploadImage: 'படத்தை பதிவேற்றுக',
     offlineMode: 'ஆஃப்லைன் முறை',
     voiceAssistant: 'ஒலி உதவியாளர்',
+  // Onboarding steps
+  onboardingWeatherTitle: 'வானிலை முன்னறிவிப்பு',
+  onboardingWeatherDesc: 'உங்கள் விவசாய நடவடிக்கைகளை திட்டமிட நேரடி வானிலை புதுப்பிப்புகளைப் பெறுங்கள்.',
+  onboardingMarketTitle: 'சந்தை விலைகள்',
+  onboardingMarketDesc: 'அருகிலுள்ள சந்தைகளிலிருந்து சமீபத்திய பயிர் விலைகளைப் பெறுங்கள்.',
+  onboardingDiseaseTitle: 'நோய் கண்டறிதல்',
+  onboardingDiseaseDesc: 'உங்கள் பயிர் நோய்களை உடனடியாக கண்டறிய புகைப்படத்தை பதிவேற்றவும்.',
+  onboardingAdvisoryTitle: 'ஏஐ ஆலோசனை',
+  onboardingAdvisoryDesc: 'எங்கள் ஏஐ நிபுணரிடம் விவசாயம் தொடர்பான கேள்விகளை கேட்டு உடனடி ஆலோசனை பெறுங்கள்.',
+  skip: 'தவிர்க்க',
+  next: 'அடுத்தது',
   },
   te: {
     appName: 'KisanSetu',
@@ -195,6 +228,17 @@ const translations = {
     uploadImage: 'చిత్రం అప్లోడ్ చేయి',
     offlineMode: 'ఆఫ్‌లైన్ మోడ్',
     voiceAssistant: 'వాయిస్ అసిస్టెంట్',
+  // Onboarding steps
+  onboardingWeatherTitle: 'వాతావరణ సూచనలు',
+  onboardingWeatherDesc: 'మీ వ్యవసాయ కార్యకలాపాలను ప్రణాళిక చేయడానికి తక్షణ వాతావరణ నవీకరణలను పొందండి.',
+  onboardingMarketTitle: 'మార్కెట్ ధరలు',
+  onboardingMarketDesc: 'సమీప మార్కెట్ల నుండి తాజా పంట ధరలను తెలుసుకోండి.',
+  onboardingDiseaseTitle: 'రోగ నిర్ధారణ',
+  onboardingDiseaseDesc: 'మీ పంటలోని వ్యాధులను వెంటనే గుర్తించడానికి ఫోటోను అప్లోడ్ చేయండి.',
+  onboardingAdvisoryTitle: 'AI సలహా',
+  onboardingAdvisoryDesc: 'వ్యవసాయ సంబంధిత ఏదైనా ప్రశ్నను మా AI నిపుణుడిని అడిగి తక్షణ సలహా పొందండి.',
+  skip: 'దాటవేయి',
+  next: 'తరువాత',
   }
 };
 
