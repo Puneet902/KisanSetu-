@@ -20,6 +20,7 @@ import MainTabNavigator from './navigation/MainTabNavigator';
 import { useLocalization } from './hooks/useLocalization';
 import { LocalizationProvider } from './localization/LocalizationProvider';
 import LoginScreen from './components/LoginScreen';
+import LocationScreen from './components/LocationScreen';
 import MultiStepOnboarding from './components/MultiStepOnboarding';
 import LanguageSelector from './components/LanguageSelector';
 import LocationPermissionModal from './components/LocationPermissionModal';
@@ -68,8 +69,9 @@ export default function App() {
             <MultiStepOnboarding onDone={handleOnboardingDone} onSkip={handleOnboardingDone} />
           ) : (
             <>
-              <Stack.Navigator initialRouteName="Main">
+              <Stack.Navigator initialRouteName="Login">
                 <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
+                <Stack.Screen name="Location" component={LocationScreen} options={{ headerShown: false }} />
                 <Stack.Screen name="Main" component={MainTabNavigator} options={{ headerShown: false }} />
                 <Stack.Screen name="Disease" component={require('./components/DiseaseDetectionScreen').default} options={{ headerShown: false }} />
               </Stack.Navigator>

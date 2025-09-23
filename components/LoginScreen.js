@@ -1,19 +1,37 @@
 import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native';
 import { useLocalization } from '../hooks/useLocalization';
 
 export default function LoginScreen({ navigation }) {
+	const [name, setName] = useState('');
 	const [phone, setPhone] = useState('');
 	const { t } = useLocalization();
 
 	const handleLogin = () => {
-		// preserve logic: navigate to Home after "login"
-		navigation.replace('Main');
+		// Validate inputs
+		if (!name.trim()) {
+			Alert.alert('Error', 'Please enter your name');
+			return;
+		}
+		if (!phone.trim()) {
+			Alert.alert('Error', 'Please enter your phone number');
+			return;
+		}
+		
+		// Navigate to LocationScreen with user data
+		navigation.navigate('Location', { name: name.trim(), phone: phone.trim() });
 	};
 
 	return (
 		<View style={styles.container}>
 			<Text style={styles.title}>{t('loginTitle')}</Text>
+			<TextInput
+				style={styles.input}
+				placeholder="Enter your name"
+				value={name}
+				onChangeText={setName}
+				autoCapitalize="words"
+			/>
 			<TextInput
 				style={styles.input}
 				placeholder={t('enterPhone')}
