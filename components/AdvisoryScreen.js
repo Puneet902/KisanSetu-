@@ -1,8 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { View, Text, TextInput, TouchableOpacity, ScrollView, Image, StyleSheet, KeyboardAvoidingView, Platform } from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, ScrollView, Image, StyleSheet, KeyboardAvoidingView, Platform, Alert, SafeAreaView, StatusBar } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useLocalization } from '../hooks/useLocalization';
 import { ChevronLeftIcon, MicIcon, CameraIcon, SendIcon, LogoIcon } from './Icons';
 import { generateChatResponse } from '../services/geminiService';
+import * as Location from 'expo-location';
+import { supabase } from '../src/lib/supabaseClient';
 
 const commonQuestionsData = [
   { key: 'What crops should I add?', imageUrl: 'https://lh3.googleusercontent.com/aida-public/AB6AXuDAq9ADrufO6L_FLDVa2HULD5F5P0HvYuDYtHR8_SrWKQKq6e3I7Rs8XThsJJV-lT5I8JzUI-eq6-a66gMq6yfMf_zDw0ku0E3F9YSeo_R0BlSw8jwiMNKtLS2b49-vBvyyqRTq1Y5Ps6ZvMytQFZOSbeqLAGS0TYO6VE3D-9Ks5dc0CiLNB8axv2pHczM3qXqiYiep96JU95-Xnn-eZT6x6_bZfqsgKWS8JlLdf1d-z1md1s5ljyxDL9z52XH8dO9g9qFLfS6LxliP' },
@@ -18,6 +21,7 @@ const AdvisoryScreen = () => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [soilInfo, setSoilInfo] = useState(null);
   const scrollRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -28,12 +32,273 @@ const AdvisoryScreen = () => {
     if (isChatting) scrollToBottom();
   }, [messages, isChatting]);
 
+  // ✅ Get real user location from device or database
+  const fetchUserLocation = async () => {
+    try {
+      // First try to get from Supabase user data
+      const { data, error } = await supabase
+        .from('users')
+        .select('latitude, longitude, name')
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (!error && data && data.length > 0) {
+        const { latitude, longitude } = data[0];
+        if (latitude && longitude) {
+          console.log('📍 Location from database:', { lat: latitude, lon: longitude });
+          return { lat: latitude, lon: longitude };
+        }
+      }
+
+      // If no database location, try device location
+      console.log('📱 Requesting device location...');
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      
+      if (status !== 'granted') {
+        console.warn('⚠️ Location permission denied');
+        return null;
+      }
+
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const { latitude, longitude } = location.coords;
+      console.log('📍 Location from device:', { lat: latitude, lon: longitude });
+      
+      return { lat: latitude, lon: longitude };
+      
+    } catch (error) {
+      console.error("❌ Error fetching location:", error);
+      return null;
+    }
+  };
+
+  // ✅ Get soil analysis using Gemini AI based on location
+  const getSoilAnalysisFromGemini = async (lat, lon) => {
+    try {
+      console.log('🤖 Getting soil analysis from Gemini AI...');
+      
+      const soilPrompt = `
+        Analyze the soil characteristics for this exact geographic location:
+        Latitude: ${lat}
+        Longitude: ${lon}
+        
+        Based on your knowledge of global geography, climate, geology, and soil science, provide detailed analysis for this specific location:
+        
+        1. Identify the country, state/province, and region
+        2. Determine soil type based on local geology and climate
+        3. Estimate pH range for this geographic area
+        4. Approximate soil composition percentages
+        5. Assess nitrogen and nutrient levels
+        6. Recommend suitable crops for this location and soil
+        7. Describe regional agricultural characteristics
+        8. Consider local climate impact on soil
+        
+        Provide accurate, location-specific data. Do not use generic or assumed values.
+        
+        Format your response as JSON:
+        {
+          "soilType": "specific soil type",
+          "ph": "pH range",
+          "clay": "clay %",
+          "sand": "sand %", 
+          "silt": "silt %",
+          "nitrogen": "nitrogen level",
+          "bestCrops": ["crop1", "crop2", "crop3"],
+          "region": "specific region name",
+          "country": "country name",
+          "climate": "climate type",
+          "description": "detailed soil and agricultural characteristics"
+        }
+      `;
+
+      const response = await generateChatResponse(soilPrompt, [], 'en');
+      console.log('🌾 Gemini soil analysis response:', response);
+      
+      // Try to parse JSON response
+      try {
+        // Extract JSON from response (in case there's extra text)
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const soilData = JSON.parse(jsonMatch[0]);
+          return {
+            type: soilData.soilType || "Unknown",
+            ph: soilData.ph || "Unknown",
+            clay: soilData.clay || "Unknown",
+            sand: soilData.sand || "Unknown", 
+            silt: soilData.silt || "Unknown",
+            nitrogen: soilData.nitrogen || "Unknown",
+            bestCrops: soilData.bestCrops || [],
+            region: soilData.region || "Unknown",
+            country: soilData.country || "Unknown",
+            climate: soilData.climate || "Unknown",
+            description: soilData.description || "No description available",
+            source: "Gemini AI Analysis"
+          };
+        }
+      } catch (parseError) {
+        console.log('📝 JSON parsing failed, using text response');
+      }
+      
+      // If JSON parsing fails, extract info from text response
+      return {
+        type: extractFromText(response, /soil type[:\s]*([^.\n]+)/i) || "Unknown",
+        ph: extractFromText(response, /ph[:\s]*([0-9.-]+)/i) || "Unknown", 
+        clay: extractFromText(response, /clay[:\s]*([0-9%]+)/i) || "Unknown",
+        sand: extractFromText(response, /sand[:\s]*([0-9%]+)/i) || "Unknown",
+        silt: extractFromText(response, /silt[:\s]*([0-9%]+)/i) || "Unknown",
+        nitrogen: extractFromText(response, /nitrogen[:\s]*([^.\n]+)/i) || "Unknown",
+        region: extractFromText(response, /region[:\s]*([^.\n]+)/i) || "Unknown",
+        description: response.substring(0, 200) + "...",
+        source: "Gemini AI Analysis"
+      };
+      
+    } catch (error) {
+      console.error('❌ Gemini soil analysis failed:', error);
+      return {
+        type: "Unknown",
+        ph: "Unknown",
+        clay: "Unknown",
+        sand: "Unknown", 
+        silt: "Unknown",
+        nitrogen: "Unknown",
+        region: "Unknown",
+        description: "Failed to analyze soil data",
+        source: "Error"
+      };
+    }
+  };
+
+  // ✅ Helper function to extract data from text response
+  const extractFromText = (text, regex) => {
+    const match = text.match(regex);
+    return match ? match[1].trim() : null;
+  };
+
+  // ✅ Format Gemini response for better readability
+  const formatGeminiResponse = (response) => {
+    if (!response) return response;
+    
+    let formatted = response
+      // Remove ALL asterisks and markdown formatting
+      .replace(/\*\*(.*?)\*\*/g, '$1')  // Remove ** bold markers
+      .replace(/\*(.*?)\*/g, '$1')      // Remove * italic markers
+      .replace(/\*/g, '')               // Remove any remaining asterisks
+      .replace(/#{1,6}\s*/g, '')        // Remove # headers
+      .replace(/`{1,3}(.*?)`{1,3}/g, '$1') // Remove code backticks
+      
+      // Improve bullet points
+      .replace(/^[\s]*[-•]\s*/gm, '🌱 ') // Use plant emoji for bullets
+      .replace(/^\d+\.\s*/gm, '🌱 ')     // Convert numbers to plant bullets
+      
+      // Clean up spacing and formatting
+      .replace(/\n{3,}/g, '\n\n')       // Remove excessive line breaks
+      .replace(/^\s+/gm, '')            // Remove leading spaces
+      .replace(/\s+$/gm, '')            // Remove trailing spaces
+      .trim();
+    
+    // Add farming-relevant emojis for better visual appeal
+    formatted = formatted
+      .replace(/Direct Answer:/gi, '🎯 Answer:')
+      .replace(/Key Actions:/gi, '📋 Action Steps:')
+      .replace(/Important Note:/gi, '💡 Key Tip:')
+      .replace(/Recommendation:/gi, '✅ Recommendation:')
+      .replace(/Warning:/gi, '⚠️ Warning:')
+      .replace(/Tip:/gi, '💡 Tip:')
+      .replace(/Steps:/gi, '📝 Steps:')
+      .replace(/Solution:/gi, '🔧 Solution:')
+      
+      // Add context-specific emojis
+      .replace(/\b(fertilizer|fertilizers)\b/gi, '🧪 fertilizer')
+      .replace(/\b(seed|seeds)\b/gi, '🌰 seed')
+      .replace(/\b(water|watering|irrigation)\b/gi, '💧 water')
+      .replace(/\b(soil)\b/gi, '🌍 soil')
+      .replace(/\b(crop|crops)\b/gi, '🌾 crops')
+      .replace(/\b(plant|planting)\b/gi, '🌱 plant')
+      .replace(/\b(harvest|harvesting)\b/gi, '🚜 harvest')
+      .replace(/\b(pesticide|pesticides)\b/gi, '🦠 pesticide')
+      .replace(/\b(disease|diseases)\b/gi, '🦠 disease')
+      .replace(/\b(weather|climate)\b/gi, '🌤️ weather')
+      .replace(/\b(profit|income|money)\b/gi, '💰 profit')
+      .replace(/\b(market|selling)\b/gi, '🏪 market');
+    
+    return formatted;
+  };
+
+  // ✅ Determine soil type based on clay, silt, sand percentages
+  const getSoilType = (clay, silt, sand) => {
+    if (!clay || !silt || !sand) return "Unknown";
+    
+    if (clay > 40) return "Clay";
+    if (sand > 70) return "Sandy";
+    if (silt > 40) return "Silty";
+    if (clay > 20 && sand > 40) return "Sandy Clay";
+    if (clay > 20 && silt > 40) return "Silty Clay";
+    return "Loamy";
+  };
+
+  // ✅ Wrapper for AI responses (with soil + location context)
+  const askGeminiWithContext = async (question, history) => {
+    try {
+      console.log('🌍 Fetching location data...');
+      const location = await fetchUserLocation();
+      console.log('📍 Location:', location);
+      
+      let soil = null;
+      if (location) {
+        console.log('🌱 Analyzing soil with Gemini AI...');
+        soil = await getSoilAnalysisFromGemini(location.lat, location.lon);
+        console.log('🌾 Soil analysis received:', soil);
+        setSoilInfo(soil); // Store soil info in state for display
+      }
+
+      const context = `
+        LOCATION: ${soil?.country || "Unknown"}, ${soil?.region || "Unknown"} (${location ? `${location.lat}, ${location.lon}` : "Unknown"})
+        SOIL: ${soil?.type || "Unknown"} | pH: ${soil?.ph || "Unknown"} | Climate: ${soil?.climate || "Unknown"}
+        COMPOSITION: Clay ${soil?.clay || "?"} | Sand ${soil?.sand || "?"} | Silt ${soil?.silt || "?"} | Nitrogen ${soil?.nitrogen || "?"}
+        
+        QUESTION: ${question}
+        
+        INSTRUCTIONS:
+        - Give a direct, focused answer to the farmer's question
+        - Use simple, clear language (avoid technical jargon)
+        - Provide 3-5 specific, actionable points
+        - Consider the soil type, pH, and local climate in your advice
+        - Format response with bullet points for easy reading
+        - Keep each point under 25 words
+        - Be practical and cost-effective for small farmers
+        
+        Format your response like this:
+        
+        **Direct Answer:**
+        [One sentence directly answering the question]
+        
+        **Key Actions:**
+        • [Action 1 - specific and practical]
+        • [Action 2 - with timing if relevant]
+        • [Action 3 - with cost consideration]
+        • [Action 4 - with local context]
+        
+        **Important Note:**
+        [One key tip specific to their soil/climate]
+      `;
+
+      const rawResponse = await generateChatResponse(context, history, language);
+      return formatGeminiResponse(rawResponse);
+    } catch (error) {
+      console.error("Gemini context error:", error);
+      return "⚠️ Failed to fetch advisory with soil data.";
+    }
+  };
+
   const startChat = async (question) => {
     if (!question.trim()) return;
     setIsChatting(true);
     setMessages([{ sender: 'user', text: question }]);
     setIsLoading(true);
-    const responseText = await generateChatResponse(question, [], language);
+
+    const responseText = await askGeminiWithContext(question, []);
     setMessages(prev => [...prev, { sender: 'bot', text: responseText }]);
     setIsLoading(false);
   };
@@ -50,7 +315,7 @@ const AdvisoryScreen = () => {
       parts: [{ text: msg.text }]
     }));
 
-    const responseText = await generateChatResponse(input, history, language);
+    const responseText = await askGeminiWithContext(input, history);
     setMessages(prev => [...prev, { sender: 'bot', text: responseText }]);
     setIsLoading(false);
   };
@@ -66,112 +331,446 @@ const AdvisoryScreen = () => {
   const InitialView = () => {
     const [initialInput, setInitialInput] = useState('');
     return (
-      <ScrollView style={styles.initialContainer}>
-        <View style={styles.inputWrapper}>
-          <TextInput
-            placeholder={t('askAQuestion')}
-            value={initialInput}
-            onChangeText={setInitialInput}
-            onSubmitEditing={() => { startChat(initialInput); setInitialInput(''); }}
-            style={styles.input}
-          />
-          <View style={styles.inputButtons}>
-            <TouchableOpacity
-              style={styles.sendButton}
-              onPress={() => { startChat(initialInput); setInitialInput(''); }}
-            >
-              {initialInput ? <SendIcon width={20} height={20} /> : <MicIcon width={20} height={20} />}
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.cameraButton}>
-              <CameraIcon width={20} height={20} />
-            </TouchableOpacity>
+      <ScrollView 
+        style={styles.initialContainer} 
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.initialScrollContent}
+      >
+        {/* Welcome Section */}
+        <View style={styles.welcomeSection}>
+          <LinearGradient 
+            colors={['#1e40af', '#3b82f6', '#60a5fa']} 
+            style={styles.welcomeBox}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+          >
+            <Text style={styles.welcomeTitle}>🌾 AI Crop Health Scanner</Text>
+            <Text style={styles.welcomeSubtitle}>
+              AI-powered detection + smart solutions
+            </Text>
+          </LinearGradient>
+        </View>
+
+        {/* Enhanced Input Section */}
+        <View style={styles.inputSection}>
+          <Text style={styles.inputLabel}>🌱 Ask Your Farming Question</Text>
+          <View style={styles.inputWrapper}>
+            <TextInput
+              placeholder="e.g., What crops should I plant this season?"
+              placeholderTextColor="#9ca3af"
+              value={initialInput}
+              onChangeText={setInitialInput}
+              onSubmitEditing={() => { startChat(initialInput); setInitialInput(''); }}
+              style={styles.input}
+              multiline
+              textAlignVertical="top"
+              returnKeyType="send"
+              blurOnSubmit={false}
+            />
+            <View style={styles.inputButtons}>
+              <TouchableOpacity
+                style={[styles.sendButton, !initialInput.trim() && styles.sendButtonDisabled]}
+                onPress={() => { startChat(initialInput); setInitialInput(''); }}
+                disabled={!initialInput.trim()}
+              >
+                {initialInput.trim() ? (
+                  <SendIcon width={20} height={20} color="#ffffff" />
+                ) : (
+                  <MicIcon width={20} height={20} color="#9ca3af" />
+                )}
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.cameraButton}>
+                <CameraIcon width={20} height={20} color="#ffffff" />
+              </TouchableOpacity>
+            </View>
           </View>
         </View>
-        <Text style={styles.sectionTitle}>{t('commonQuestions')}</Text>
-        {commonQuestionsData.map(item => (
-          <QuestionCard key={item.key} questionKey={item.key} imageUrl={item.imageUrl} />
-        ))}
+
+        {/* Quick Questions Section */}
+        <View style={styles.questionsSection}>
+          <Text style={styles.sectionTitle}>Quick Start Questions</Text>
+          <Text style={styles.sectionSubtitle}>Tap any question to get instant advice</Text>
+          {commonQuestionsData.map(item => (
+            <QuestionCard key={item.key} questionKey={item.key} imageUrl={item.imageUrl} />
+          ))}
+        </View>
       </ScrollView>
     );
   };
 
   const ChatView = () => (
-    <ScrollView ref={scrollRef} style={styles.chatContainer} contentContainerStyle={{ paddingBottom: 20 }}>
-      {messages.map((msg, i) => (
-        <View key={i} style={[styles.chatMessageWrapper, msg.sender === 'user' && styles.chatMessageUser]}>
-          {msg.sender === 'bot' && <LogoIcon width={32} height={32} color="#16a34a" />}
-          <View style={[styles.chatMessage, msg.sender === 'user' ? styles.userMessage : styles.botMessage]}>
-            <Text style={msg.sender === 'user' ? styles.userText : styles.botText}>{msg.text}</Text>
+    <View style={styles.chatViewContainer}>
+      {/* Chat Header with Back Button */}
+      <View style={styles.chatHeader}>
+        <TouchableOpacity 
+          style={styles.chatBackButton}
+          onPress={() => setIsChatting(false)}
+        >
+          <ChevronLeftIcon width={20} height={20} color="#16a34a" />
+          <Text style={styles.backButtonText}>Back to Questions</Text>
+        </TouchableOpacity>
+      </View>
+      
+      <ScrollView ref={scrollRef} style={styles.chatContainer} contentContainerStyle={{ paddingBottom: 20 }} showsVerticalScrollIndicator={false}>
+        {messages.map((msg, i) => (
+          <View key={i} style={[styles.chatMessageWrapper, msg.sender === 'user' && styles.chatMessageUser]}>
+            {msg.sender === 'bot' && (
+              <View style={styles.botAvatar}>
+                <Text style={styles.botAvatarText}>🤖</Text>
+              </View>
+            )}
+            <View style={[styles.chatMessage, msg.sender === 'user' ? styles.userMessage : styles.botMessage]}>
+              <Text style={msg.sender === 'user' ? styles.userText : styles.botText}>{msg.text}</Text>
+              <Text style={styles.messageTime}>
+                {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
+            {msg.sender === 'user' && (
+              <View style={styles.userAvatar}>
+                <Text style={styles.userAvatarText}>👨‍🌾</Text>
+              </View>
+            )}
           </View>
-        </View>
-      ))}
-      {isLoading && (
-        <View style={styles.chatMessageWrapper}>
-          <LogoIcon width={32} height={32} color="#16a34a" />
-          <View style={[styles.chatMessage, styles.botMessage]}>
-            <Text>...</Text>
+        ))}
+        {isLoading && (
+          <View style={styles.chatMessageWrapper}>
+            <View style={styles.botAvatar}>
+              <Text style={styles.botAvatarText}>🤖</Text>
+            </View>
+            <View style={[styles.chatMessage, styles.botMessage, styles.loadingMessage]}>
+              <Text style={styles.loadingText}>AI is analyzing your question...</Text>
+              <View style={styles.typingIndicator}>
+                <View style={[styles.typingDot, { animationDelay: '0ms' }]} />
+                <View style={[styles.typingDot, { animationDelay: '150ms' }]} />
+                <View style={[styles.typingDot, { animationDelay: '300ms' }]} />
+              </View>
+            </View>
           </View>
-        </View>
-      )}
-    </ScrollView>
+        )}
+      </ScrollView>
+    </View>
   );
 
   return (
-    <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => isChatting && setIsChatting(false)}>
-          <ChevronLeftIcon width={24} height={24} />
-        </TouchableOpacity>
-        <Text style={styles.headerText}>{t('aiAdvisory')}</Text>
-        <View style={{ width: 24 }} />
-      </View>
-      <View style={styles.content}>{isChatting ? <ChatView /> : <InitialView />}</View>
-      {isChatting && (
-        <View style={styles.chatInputWrapper}>
-          <TextInput
-            value={input}
-            onChangeText={setInput}
-            onSubmitEditing={handleSendFollowUp}
-            placeholder={t('askMeAnything')}
-            style={styles.chatInput}
-            editable={!isLoading}
-          />
-          <TouchableOpacity onPress={handleSendFollowUp} disabled={isLoading} style={styles.sendFollowUpButton}>
-            <SendIcon width={20} height={20} />
-          </TouchableOpacity>
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="light-content" backgroundColor="#0f172a" />
+      
+      {/* Header Gradient */}
+      <LinearGradient
+        colors={['#0f172a', '#1e293b', '#334155']}
+        style={styles.headerGradient}
+      >
+        <View style={styles.header}>
+          <View style={styles.headerContent}>
+            <Text style={styles.headerText}>AI Advisory</Text>
+          </View>
         </View>
-      )}
-    </KeyboardAvoidingView>
+      </LinearGradient>
+
+      <KeyboardAvoidingView 
+        style={styles.keyboardContainer} 
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 20}
+      >
+        <View style={styles.content}>{isChatting ? <ChatView /> : <InitialView />}</View>
+        
+        {isChatting && (
+          <View style={styles.chatInputWrapper}>
+            <View style={styles.inputContainer}>
+              <TextInput
+                value={input}
+                onChangeText={setInput}
+                onSubmitEditing={handleSendFollowUp}
+                placeholder="💬 Ask me anything about farming..."
+                placeholderTextColor="#9ca3af"
+                style={styles.chatInput}
+                editable={!isLoading}
+                multiline
+                textAlignVertical="top"
+                returnKeyType="send"
+                blurOnSubmit={false}
+              />
+              <TouchableOpacity 
+                onPress={handleSendFollowUp} 
+                disabled={isLoading || !input.trim()} 
+                style={[styles.sendFollowUpButton, (!input.trim() || isLoading) && styles.sendButtonDisabled]}
+              >
+                {isLoading ? (
+                  <Text style={styles.loadingDots}>⋯</Text>
+                ) : (
+                  <SendIcon width={22} height={22} color="#ffffff" />
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        )}
+      </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 };
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f0fdf4' },
-  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: 16, backgroundColor: 'rgba(240,253,244,0.5)' },
-  headerText: { fontSize: 18, fontWeight: 'bold', color: '#1f2937' },
+  // Main Container
+  container: { flex: 1, backgroundColor: '#f1f5f9' },
+  headerGradient: {
+    paddingTop: 50,
+    paddingBottom: 30,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
+  },
+  header: {
+    paddingHorizontal: 20,
+  },
+  headerContent: {
+    alignItems: 'center',
+  },
+  headerText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#ffffff',
+  },
+  keyboardContainer: { flex: 1 },
+  
+  // Content
   content: { flex: 1 },
-  initialContainer: { padding: 16 },
-  inputWrapper: { flexDirection: 'row', alignItems: 'center', marginBottom: 16, position: 'relative' },
-  input: { flex: 1, backgroundColor: '#fff', borderWidth: 1, borderColor: '#d1d5db', borderRadius: 999, paddingVertical: 12, paddingHorizontal: 16 },
-  inputButtons: { flexDirection: 'row', position: 'absolute', right: 8, alignItems: 'center', gap: 4 },
-  sendButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#16a34a', justifyContent: 'center', alignItems: 'center' },
-  cameraButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#78716c', justifyContent: 'center', alignItems: 'center', marginLeft: 4 },
-  sectionTitle: { fontSize: 16, fontWeight: 'bold', marginBottom: 8, color: '#1f2937' },
-  questionCard: { height: 128, borderRadius: 16, overflow: 'hidden', marginBottom: 12 },
+  
+  // Initial View
+  initialContainer: { flex: 1 },
+  initialScrollContent: { 
+    flexGrow: 1, 
+    padding: 20, 
+    paddingBottom: 40 
+  },
+  welcomeSection: { marginBottom: 30, alignItems: 'center' },
+  welcomeBox: {
+    paddingVertical: 30,
+    paddingHorizontal: 25,
+    borderRadius: 25,
+    width: '100%',
+    alignItems: 'center',
+    elevation: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+  },
+  welcomeTitle: { fontSize: 24, fontWeight: 'bold', color: '#ffffff', textAlign: 'center', marginBottom: 8 },
+  welcomeSubtitle: { fontSize: 16, color: 'rgba(255,255,255,0.9)', textAlign: 'center', lineHeight: 22 },
+  
+  inputSection: { marginBottom: 30 },
+  inputLabel: { fontSize: 18, fontWeight: '600', color: '#1f2937', marginBottom: 12 },
+  inputWrapper: { position: 'relative' },
+  input: { 
+    backgroundColor: '#ffffff', 
+    borderWidth: 2, 
+    borderColor: '#e5e7eb', 
+    borderRadius: 20, 
+    paddingVertical: 16, 
+    paddingHorizontal: 20, 
+    paddingRight: 100,
+    fontSize: 16,
+    minHeight: 60,
+    textAlignVertical: 'top',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  inputButtons: { 
+    flexDirection: 'row', 
+    position: 'absolute', 
+    right: 8, 
+    top: 8, 
+    alignItems: 'center', 
+    gap: 6 
+  },
+  sendButton: { 
+    width: 44, 
+    height: 44, 
+    borderRadius: 22, 
+    backgroundColor: '#16a34a', 
+    justifyContent: 'center', 
+    alignItems: 'center',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+  },
+  sendButtonDisabled: { backgroundColor: '#d1d5db' },
+  cameraButton: { 
+    width: 44, 
+    height: 44, 
+    borderRadius: 22, 
+    backgroundColor: '#6b7280', 
+    justifyContent: 'center', 
+    alignItems: 'center',
+    elevation: 3,
+  },
+  
+  questionsSection: { flex: 1 },
+  sectionTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 8, color: '#1f2937' },
+  sectionSubtitle: { fontSize: 14, color: '#6b7280', marginBottom: 16 },
+  questionCard: { 
+    height: 140, 
+    borderRadius: 20, 
+    overflow: 'hidden', 
+    marginBottom: 16,
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+  },
   questionImage: { width: '100%', height: '100%' },
-  questionOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.4)' },
-  questionText: { position: 'absolute', bottom: 16, left: 16, color: '#fff', fontWeight: 'bold', fontSize: 18 },
+  questionOverlay: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.5)' },
+  questionText: { 
+    position: 'absolute', 
+    bottom: 20, 
+    left: 20, 
+    right: 20, 
+    color: '#ffffff', 
+    fontWeight: 'bold', 
+    fontSize: 16,
+    lineHeight: 22,
+  },
+  
+  // Chat View
+  chatViewContainer: { flex: 1 },
+  chatHeader: { 
+    paddingTop: 50, 
+    paddingBottom: 15, 
+    paddingHorizontal: 20, 
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e5e7eb',
+  },
+  chatBackButton: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    backgroundColor: '#f3f4f6',
+    borderRadius: 20,
+    alignSelf: 'flex-start',
+  },
+  backButtonText: { 
+    fontSize: 16, 
+    color: '#16a34a', 
+    fontWeight: '600', 
+    marginLeft: 8 
+  },
   chatContainer: { flex: 1, padding: 16 },
-  chatMessageWrapper: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 8 },
+  chatMessageWrapper: { 
+    flexDirection: 'row', 
+    alignItems: 'flex-end', 
+    marginBottom: 16,
+    paddingHorizontal: 4,
+  },
   chatMessageUser: { justifyContent: 'flex-end' },
-  chatMessage: { maxWidth: '80%', padding: 12, borderRadius: 16 },
-  userMessage: { backgroundColor: '#16a34a', borderBottomRightRadius: 0 },
-  botMessage: { backgroundColor: '#e5e7eb', borderBottomLeftRadius: 0 },
-  userText: { color: '#fff' },
-  botText: { color: '#1f2937' },
-  chatInputWrapper: { flexDirection: 'row', padding: 8, borderTopWidth: 1, borderTopColor: '#d1d5db', backgroundColor: '#fff' },
-  chatInput: { flex: 1, borderWidth: 1, borderColor: '#d1d5db', borderRadius: 999, paddingVertical: 10, paddingHorizontal: 16 },
-  sendFollowUpButton: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#16a34a', justifyContent: 'center', alignItems: 'center', marginLeft: 8 }
+  
+  botAvatar: { 
+    width: 36, 
+    height: 36, 
+    borderRadius: 18, 
+    backgroundColor: '#16a34a', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginRight: 8,
+    marginBottom: 4,
+  },
+  botAvatarText: { fontSize: 18 },
+  userAvatar: { 
+    width: 36, 
+    height: 36, 
+    borderRadius: 18, 
+    backgroundColor: '#3b82f6', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginLeft: 8,
+    marginBottom: 4,
+  },
+  userAvatarText: { fontSize: 18 },
+  
+  chatMessage: { 
+    maxWidth: '75%', 
+    padding: 16, 
+    borderRadius: 20,
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  userMessage: { 
+    backgroundColor: '#3b82f6', 
+    borderBottomRightRadius: 6,
+  },
+  botMessage: { 
+    backgroundColor: '#ffffff', 
+    borderBottomLeftRadius: 6,
+    borderWidth: 1,
+    borderColor: '#e5e7eb',
+  },
+  userText: { color: '#ffffff', fontSize: 16, lineHeight: 22 },
+  botText: { color: '#1f2937', fontSize: 16, lineHeight: 24 },
+  messageTime: { 
+    fontSize: 11, 
+    opacity: 0.7, 
+    marginTop: 4,
+    textAlign: 'right',
+  },
+  
+  loadingMessage: { backgroundColor: '#f3f4f6' },
+  loadingText: { color: '#6b7280', fontSize: 14, marginBottom: 8 },
+  typingIndicator: { flexDirection: 'row', alignItems: 'center' },
+  typingDot: { 
+    width: 6, 
+    height: 6, 
+    borderRadius: 3, 
+    backgroundColor: '#9ca3af', 
+    marginRight: 4,
+  },
+  
+  // Chat Input
+  chatInputWrapper: { 
+    padding: 16, 
+    paddingBottom: Platform.OS === 'ios' ? 16 : 20,
+    borderTopWidth: 1, 
+    borderTopColor: '#e5e7eb', 
+    backgroundColor: '#ffffff',
+    elevation: 8,
+  },
+  inputContainer: { 
+    flexDirection: 'row', 
+    alignItems: 'flex-end',
+    backgroundColor: '#f9fafb',
+    borderRadius: 25,
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  chatInput: { 
+    flex: 1, 
+    borderRadius: 20, 
+    paddingVertical: 12, 
+    paddingHorizontal: 16,
+    fontSize: 16,
+    maxHeight: 100,
+    backgroundColor: 'transparent',
+  },
+  sendFollowUpButton: { 
+    width: 44, 
+    height: 44, 
+    borderRadius: 22, 
+    backgroundColor: '#16a34a', 
+    justifyContent: 'center', 
+    alignItems: 'center',
+    marginLeft: 4,
+    elevation: 3,
+  },
+  loadingDots: { color: '#ffffff', fontSize: 18, fontWeight: 'bold' },
 });
 
 export default AdvisoryScreen;

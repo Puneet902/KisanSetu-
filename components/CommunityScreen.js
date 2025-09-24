@@ -8,8 +8,11 @@ import {
   StyleSheet,
   Modal,
   TextInput,
+  StatusBar,
 } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
+import { SettingsIcon } from './Icons';
 
 // --- Timeline formatter ---
 const getTimeAgo = (date) => {
@@ -163,12 +166,22 @@ export default function CommunityScreen() {
     }
   };
 
+
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <Text style={styles.headerTitle}>Community & Govt Connect</Text>
-      </View>
+      <StatusBar barStyle="light-content" backgroundColor="#0f172a" />
+      
+      {/* Header Gradient */}
+      <LinearGradient
+        colors={['#0f172a', '#1e293b', '#334155']}
+        style={styles.headerGradient}
+      >
+        <View style={styles.header}>
+          <View style={styles.headerContent}>
+            <Text style={styles.headerText}>Community & Govt Connect</Text>
+          </View>
+        </View>
+      </LinearGradient>
 
       {/* Toggle */}
       <View style={styles.toggleRow}>
@@ -298,17 +311,24 @@ export default function CommunityScreen() {
 
 // --- Styles ---
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f8fafc' },
-  header: {
+  container: { flex: 1, backgroundColor: '#f1f5f9' },
+  headerGradient: {
     paddingTop: 50,
-    paddingBottom: 12,
-    paddingHorizontal: 16,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#e2e8f0',
-    elevation: 3,
+    paddingBottom: 30,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
   },
-  headerTitle: { fontSize: 20, fontWeight: 'bold', textAlign: 'center', color: '#1e293b' },
+  header: {
+    paddingHorizontal: 20,
+  },
+  headerContent: {
+    alignItems: 'center',
+  },
+  headerText: {
+    fontSize: 24,
+    fontWeight: 'bold',
+    color: '#ffffff',
+  },
 
   toggleRow: {
     flexDirection: 'row',

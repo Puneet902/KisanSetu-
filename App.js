@@ -24,6 +24,7 @@ import LocationScreen from './components/LocationScreen';
 import MultiStepOnboarding from './components/MultiStepOnboarding';
 import LanguageSelector from './components/LanguageSelector';
 import LocationPermissionModal from './components/LocationPermissionModal';
+import VoiceAssistantScreen from './components/VoiceAssistantScreen';
 
 const Stack = createStackNavigator();
 
@@ -73,7 +74,21 @@ export default function App() {
                 <Stack.Screen name="Login" component={LoginScreen} options={{ headerShown: false }} />
                 <Stack.Screen name="Location" component={LocationScreen} options={{ headerShown: false }} />
                 <Stack.Screen name="Main" component={MainTabNavigator} options={{ headerShown: false }} />
-                <Stack.Screen name="Disease" component={require('./components/DiseaseDetectionScreen').default} options={{ headerShown: false }} />
+                <Stack.Screen name="VoiceAssistant" component={VoiceAssistantScreen} options={{ headerShown: false }} />
+                <Stack.Screen name="Disease" options={{ headerShown: false }}>
+                  {(props) => {
+                    const DiseaseScreen = require('./components/DiseaseDetectionScreen').default;
+                    // You can get your free API key from: https://huggingface.co/settings/tokens
+                    const API_KEY = process.env.EXPO_PUBLIC_HUGGINGFACE_API_KEY || 'hf_demo_key_replace_with_your_key';
+                    
+                    // Debug: Log environment variable
+                    console.log('Environment EXPO_PUBLIC_HUGGINGFACE_API_KEY:', process.env.EXPO_PUBLIC_HUGGINGFACE_API_KEY ? 'EXISTS' : 'NOT FOUND');
+                    console.log('Raw env value:', process.env.EXPO_PUBLIC_HUGGINGFACE_API_KEY);
+                    console.log('Final API_KEY being passed:', API_KEY ? `${API_KEY.substring(0, 10)}...` : 'undefined');
+                    
+                    return <DiseaseScreen {...props} apiKey={API_KEY} />;
+                  }}
+                </Stack.Screen>
               </Stack.Navigator>
               <LocationPermissionModal
                 visible={locationModalVisible}

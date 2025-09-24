@@ -29,6 +29,8 @@ export const WeatherIcon = ({ style }) => <Text style={style}>☀️</Text>;
 export const DiseaseIcon = ({ style }) => <Text style={style}>🔍</Text>;
 export const AdvisoryIcon = ({ style }) => <Text style={style}>💬</Text>;
 export const EditIcon = ({ style }) => <Text style={style}>✏️</Text>;
+export const StopIcon = ({ style }) => <Text style={style}>⏹️</Text>;
+export const RefreshIcon = ({ style }) => <Text style={style}>🔄</Text>;
 
 export default {
   HomeIcon,
@@ -53,4 +55,5 @@ export default {
   DiseaseIcon,
   AdvisoryIcon,
   EditIcon,
+  StopIcon,
 };
