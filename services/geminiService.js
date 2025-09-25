@@ -1,103 +1,200 @@
 // services/geminiService.js
-// Mobile-compatible Gemini API integration
+import { GEMINI_API_KEY } from '@env';
+import * as FileSystem from 'expo-file-system';
+import { encode as base64Encode } from 'base-64';
 
-const GEMINI_API_KEY = process.env.EXPO_PUBLIC_GEMINI_API_KEY;
+if (!GEMINI_API_KEY) {
+  throw new Error("❌ GEMINI_API_KEY missing in .env");
+}
 
-const generateChatResponse = async (message, history = [], language = "en") => {
+// No SDK client in React Native to avoid Base64/polyfill issues
+
+// Utility
+function parseJsonLenient(text) {
+  if (!text || typeof text !== 'string') return null;
   try {
-    if (!GEMINI_API_KEY) {
-      console.warn("⚠️ GEMINI_API_KEY not set in .env; returning mock response.");
-      return "Mock response from geminiService (no API key set).";
-    }
-
-    // Prepare context: include conversation history + latest user input
-    const contents = [
-      ...history,
-      { role: "user", parts: [{ text: message }] }
-    ];
-
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents })
-      }
-    );
-
-    const data = await response.json();
-    if (!response.ok) {
-      console.error("Gemini API error:", data);
-      return `API Error: ${data.error?.message || "Unknown error"}`;
-    }
-
-    // Extract text from Gemini response
-    const text =
-      data?.candidates?.[0]?.content?.parts?.[0]?.text || "No response generated.";
-    return text.trim();
-  } catch (err) {
-    console.error("geminiService error:", err);
-    return "Error contacting Gemini AI service.";
-  }
-};
-
-const getSoilAnalysisFromGemini = async (latitude, longitude) => {
-  try {
-    const prompt = `
-      Analyze the soil and agricultural conditions for location: ${latitude}, ${longitude}
-      
-      Provide a JSON response with the following structure:
-      {
-        "country": "Country name",
-        "region": "State/Region name", 
-        "type": "Soil type (clay/sandy/loam)",
-        "ph": "pH level (6.0-8.0)",
-        "climate": "Climate type",
-        "clay": "Clay percentage",
-        "sand": "Sand percentage", 
-        "silt": "Silt percentage",
-        "nitrogen": "Nitrogen level"
-      }
-      
-      Base your analysis on the geographical location and typical soil conditions for that area.
-    `;
-
-    const response = await generateChatResponse(prompt);
-    
+    return JSON.parse(text);
+  } catch (_) {}
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
     try {
-      // Try to parse JSON response
-      const soilData = JSON.parse(response);
-      return soilData;
-    } catch (parseError) {
-      // If JSON parsing fails, return default data based on location
-      console.log('Using default soil data for location');
-      return {
-        country: "India",
-        region: "Andhra Pradesh",
-        type: "Clay",
-        ph: "6.8",
-        climate: "Tropical",
-        clay: "45%",
-        sand: "30%",
-        silt: "25%",
-        nitrogen: "Medium"
-      };
-    }
-  } catch (error) {
-    console.error('Soil analysis error:', error);
-    return {
-      country: "India",
-      region: "Andhra Pradesh", 
-      type: "Clay",
-      ph: "6.8",
-      climate: "Tropical",
-      clay: "45%",
-      sand: "30%",
-      silt: "25%",
-      nitrogen: "Medium"
-    };
+      return JSON.parse(jsonMatch[0]);
+    } catch (_) {}
   }
-};
+  return null;
+}
+
+// ✅ General chat response
+async function generateChatResponse(message, context = {}) {
+  try {
+    const { location = "India", previousMessages = [] } = context;
+    const historyText = previousMessages
+      .map(m => `${m.sender === 'user' ? 'Farmer' : 'Assistant'}: ${m.text}`)
+      .join("\n");
+
+    const prompt = `
+You are an AI farming advisor for Indian farmers.
+Always give direct, practical advice.
+
+Location policy:
+- If the farmer's message mentions a location/region/state/city, USE THAT location.
+- Otherwise, default to: ${location}.
+
+Conversation so far:
+${historyText}
+
+Farmer: ${message}
+Assistant:`;
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+    const payload = {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { temperature: 0.6, maxOutputTokens: 512 },
+    };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Gemini REST error ${res.status}: ${errText}`);
+    }
+    const data = await res.json();
+    let text = '';
+    const candidate = data?.candidates?.[0];
+    const parts = candidate?.content?.parts || [];
+    for (const p of parts) if (typeof p.text === 'string') text += p.text;
+    return { type: "general_response", text, data: parseJsonLenient(text) };
+  } catch (err) {
+    console.error("❌ generateChatResponse error:", err);
+    return { type: "error", text: "⚠️ AI error. Please try again.", data: null };
+  }
+}
+
+// ✅ Soil analysis (used by Advisory/VoiceAssistant)
+async function getSoilAnalysisFromGemini(lat, lon) {
+  const prompt = `
+Analyze soil at coordinates:
+Latitude: ${lat}, Longitude: ${lon}
+
+Respond in JSON only:
+{
+  "country": "Country",
+  "region": "Region/State",
+  "soilType": "Clay/Loam/Sandy",
+  "ph": "6.0-7.5",
+  "clay": "percent",
+  "sand": "percent",
+  "silt": "percent",
+  "nitrogen": "Low/Medium/High",
+  "climate": "Climate type",
+  "description": "Short note"
+}
+`;
+
+  const response = await generateChatResponse(prompt, { location: `${lat},${lon}` });
+  return response.data || {
+    country: "Unknown",
+    region: "Unknown",
+    soilType: "Unknown",
+    ph: "Unknown",
+    clay: "?",
+    sand: "?",
+    silt: "?",
+    nitrogen: "?",
+    climate: "Unknown",
+    description: "No soil data"
+  };
+}
 
 export { generateChatResponse, getSoilAnalysisFromGemini };
-export default { generateChatResponse, getSoilAnalysisFromGemini };
+
+// ✅ Voice assistant: generate answer from recorded audio using Gemini Multimodal
+// audioUri: file URI returned by Expo Audio.Recording
+// options: { location?: string, language?: string }
+export async function generateVoiceAnswerFromAudio(audioUri, options = {}) {
+  const { location = 'India', language = 'en-IN' } = options;
+
+  if (!audioUri) {
+    throw new Error('Audio URI is required');
+  }
+
+  try {
+    // Read audio file as base64. Some SDKs expect a string literal key.
+    let base64Audio = '';
+    try {
+      base64Audio = await FileSystem.readAsStringAsync(audioUri, { encoding: 'base64' });
+    } catch (e) {
+      // Fallback: fetch file and manual Base64 encode
+      const response = await fetch(audioUri);
+      const arrayBuffer = await response.arrayBuffer();
+      const bytes = new Uint8Array(arrayBuffer);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      base64Audio = base64Encode(binary);
+    }
+
+    // Infer mime type from extension; default to audio/m4a
+    let mimeType = 'audio/m4a';
+    const lower = audioUri.toLowerCase();
+    if (lower.endsWith('.wav')) mimeType = 'audio/wav';
+    else if (lower.endsWith('.mp3')) mimeType = 'audio/mpeg';
+    else if (lower.endsWith('.ogg')) mimeType = 'audio/ogg';
+    else if (lower.endsWith('.webm')) mimeType = 'audio/webm';
+
+    const prompt = `You are an Indian farming voice assistant.
+- First, understand the user's spoken question from the audio.
+- Location policy: If the user mentions a specific region/city/state in speech, USE THAT location; otherwise, use this fallback: ${location}.
+- Answer directly and practically in ${language}.
+- Keep it concise (2-4 sentences) unless the user asks for detail.`;
+
+    // Use REST API to avoid SDK Base64/polyfill issues in React Native
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+    const payload = {
+      contents: [
+        {
+          role: 'user',
+          parts: [
+            { text: prompt },
+            {
+              inlineData: {
+                mimeType,
+                data: base64Audio,
+              },
+            },
+          ],
+        },
+      ],
+      generationConfig: {
+        temperature: 0.6,
+        maxOutputTokens: 256,
+      },
+    };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    if (!res.ok) {
+      const errText = await res.text();
+      throw new Error(`Gemini REST error ${res.status}: ${errText}`);
+    }
+
+    const data = await res.json();
+    let text = '';
+    const candidate = data?.candidates?.[0];
+    const parts = candidate?.content?.parts || [];
+    for (const p of parts) {
+      if (typeof p.text === 'string') text += p.text;
+    }
+    if (!text) text = 'Sorry, I could not understand the audio. Please try again.';
+    return { type: 'voice_response', text };
+  } catch (err) {
+    console.error('❌ generateVoiceAnswerFromAudio error:', err);
+    throw err;
+  }
+}

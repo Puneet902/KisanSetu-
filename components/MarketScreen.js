@@ -148,6 +148,12 @@ const MarketScreen = ({ navigation }) => {
         style={styles.headerGradient}
       >
         <View style={styles.header}>
+          <TouchableOpacity 
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}
+          >
+            <ChevronLeftIcon width={24} height={24} color="#e2e8f0" />
+          </TouchableOpacity>
           <View style={styles.headerCenter}>
             {loadingLocation ? (
               <View style={styles.loadingLocation}>
@@ -220,6 +226,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
+  },
+  backButton: {
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    padding: 12,
+    borderRadius: 16,
   },
   headerCenter: {
     flex: 1,

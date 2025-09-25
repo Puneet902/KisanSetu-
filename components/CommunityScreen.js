@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -13,6 +13,8 @@ import {
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ImagePicker from 'expo-image-picker';
 import { SettingsIcon } from './Icons';
+import { supabase } from '../src/lib/supabaseClient';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // --- Timeline formatter ---
 const getTimeAgo = (date) => {
@@ -107,9 +109,74 @@ export default function CommunityScreen() {
   const [newText, setNewText] = useState('');
   const [newMedia, setNewMedia] = useState({});
 
+  // User data state
+  const [userData, setUserData] = useState({
+    name: 'You',
+    location: 'My Village',
+    profileImage: 'https://i.imgur.com/3Z4Y5Zp.png'
+  });
+  const [loadingUserData, setLoadingUserData] = useState(true);
+
   // viewer modal state
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerMedia, setViewerMedia] = useState({ uri: null, type: null });
+
+  // Fetch user data from Supabase
+  const fetchUserData = async () => {
+    try {
+      setLoadingUserData(true);
+      
+      // Fetch the most recent user data
+      const { data, error } = await supabase
+        .from('users')
+        .select('name, latitude, longitude')
+        .order('created_at', { ascending: false })
+        .limit(1);
+
+      if (error) {
+        console.log('Supabase error:', error);
+        // Keep default values if error
+      } else if (data && data.length > 0) {
+        console.log('Fetched user data for community:', data[0]);
+        setUserData(prev => ({
+          ...prev,
+          name: data[0].name || 'You',
+          location: 'My Village' // You can add location logic here if needed
+        }));
+      }
+    } catch (error) {
+      console.error('Error fetching user data:', error);
+    } finally {
+      setLoadingUserData(false);
+    }
+  };
+
+  // Fetch profile image from ProfileScreen data (if available)
+  const fetchProfileImage = async () => {
+    try {
+      // Try to get profile image from AsyncStorage
+      const savedProfileImage = await AsyncStorage.getItem('userProfileImage');
+      const profileImage = savedProfileImage || 'https://via.placeholder.com/150/16a34a/ffffff?text=Profile';
+      
+      setUserData(prev => ({
+        ...prev,
+        profileImage: profileImage
+      }));
+    } catch (error) {
+      console.error('Error fetching profile image:', error);
+      // Use default image if error
+      setUserData(prev => ({
+        ...prev,
+        profileImage: 'https://via.placeholder.com/150/16a34a/ffffff?text=Profile'
+      }));
+    }
+  };
+
+  // Fetch user data when component mounts
+  useEffect(() => {
+    fetchUserData();
+    fetchProfileImage();
+  }, []);
 
   // pick image
   const pickImage = async () => {
@@ -142,10 +209,10 @@ export default function CommunityScreen() {
     }
     const newPost = {
       id: String(Date.now()),
-      name: 'You',
-      location: 'My Village',
+      name: userData.name, // Use fetched name from database
+      location: userData.location, // Use user location
       createdAt: new Date(),
-      avatarUrl: 'https://i.imgur.com/3Z4Y5Zp.png',
+      avatarUrl: userData.profileImage, // Use profile image from profile
       text: newText,
       ...newMedia,
     };

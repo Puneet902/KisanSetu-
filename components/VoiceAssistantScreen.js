@@ -1,788 +1,1287 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, SafeAreaView, Alert, Animated, Platform, TextInput, Modal, ScrollView, BackHandler } from 'react-native';
+import React, { useEffect, useState, useRef } from 'react';
+import { View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, Alert, Platform, Linking, Animated, ScrollView, BackHandler } from 'react-native';
+import { Audio } from 'expo-av';
 import * as Speech from 'expo-speech';
-import { LinearGradient } from 'expo-linear-gradient';
-import { useFocusEffect } from '@react-navigation/native';
-import { useLocalization } from '../hooks/useLocalization';
-import { ChevronLeftIcon, MicIcon, StopIcon, SettingsIcon } from './Icons';
-import { generateChatResponse, getSoilAnalysisFromGemini } from '../services/geminiService';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Location from 'expo-location';
-import { supabase } from '../src/lib/supabaseClient';
+import { generateVoiceAnswerFromAudio } from '../services/geminiService';
 
-const VoiceAssistantScreen = ({ navigation }) => {
-  const { t, language } = useLocalization();
+export default function VoiceAssistant({ route, navigation }) {
+  const [recording, setRecording] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [processing, setProcessing] = useState(false);
+  const [lastText, setLastText] = useState('');
+  const [error, setError] = useState('');
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [audioSessionReady, setAudioSessionReady] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [transcription, setTranscription] = useState('');
-  const [response, setResponse] = useState('');
-  const [pulseAnim] = useState(new Animated.Value(1));
-  const [soilInfo, setSoilInfo] = useState(null);
+  const [permissionResponse, requestPermission] = Audio.usePermissions();
   const [userLocation, setUserLocation] = useState(null);
-  const [showInputModal, setShowInputModal] = useState(false);
-  const [inputText, setInputText] = useState('');
-  const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
-  const [isListening, setIsListening] = useState(false);
+  const [locationName, setLocationName] = useState('India');
+  const [locationLoading, setLocationLoading] = useState(false);
+  const locationHint = locationName;
 
-  // Predefined questions that cycle through on voice input
-  const voiceQuestions = [
-    "What crops should I plant this season?",
-    "When is the right time to harvest my crops?",
-    "How do I improve my soil quality?",
-    "What fertilizer should I use for my crops?",
-    "How do I protect my crops from pests?",
-    "When should I water my plants?",
-    "What are the signs of plant diseases?",
-    "How do I prepare soil for planting?"
-  ];
+  // Single source of truth for recording
+  const currentRecording = useRef(null);
+  const isCurrentlyRecording = useRef(false);
 
-  // Common farming questions for quick buttons
-  const commonQuestions = [
-    "What crops should I plant this season?",
-    "How do I treat leaf spot disease?",
-    "When is the best time to harvest wheat?",
-    "What fertilizer should I use for tomatoes?",
-    "How can I improve my soil quality?",
-    "What are the signs of nitrogen deficiency?"
-  ];
+  // Animation refs for Gemini-style effects
+  const scaleAnim = useRef(new Animated.Value(1)).current;
+  const pulseAnim = useRef(new Animated.Value(1)).current;
+  const rotateAnim = useRef(new Animated.Value(0)).current;
+  const waveAnim1 = useRef(new Animated.Value(0.3)).current;
+  const waveAnim2 = useRef(new Animated.Value(0.5)).current;
+  const waveAnim3 = useRef(new Animated.Value(0.7)).current;
+  const glowAnim = useRef(new Animated.Value(0)).current;
 
-  useEffect(() => {
-    fetchUserLocationFromDB();
-    
-    // Cleanup function to stop speech when component unmounts
-    return () => {
-      if (isSpeaking) {
-        Speech.stop();
-      }
-    };
-  }, []);
-
-  // Stop speech when component unmounts or back button is pressed
-  useEffect(() => {
-    return () => {
-      Speech.stop();
-    };
-  }, []);
-
-  // Stop speech when screen loses focus (back button, navigation, etc.)
-  useFocusEffect(
-    React.useCallback(() => {
-      // Handle Android hardware back button
-      const onBackPress = () => {
-        console.log('🔊 Hardware back button pressed - stopping speech');
-        Speech.stop();
-        setIsSpeaking(false);
-        setIsListening(false);
-        setIsRecording(false);
-        stopPulseAnimation();
-        return false; // Let the default back action happen
-      };
-
-      // Add back button listener for Android
-      const backHandler = BackHandler.addEventListener('hardwareBackPress', onBackPress);
-
-      return () => {
-        // This runs when screen loses focus
-        console.log('🔊 Screen lost focus - stopping speech');
-        Speech.stop();
-        setIsSpeaking(false);
-        setIsListening(false);
-        setIsRecording(false);
-        stopPulseAnimation();
-        
-        // Remove back button listener
-        backHandler.remove();
-      };
-    }, [])
-  );
-
-  const fetchUserLocationFromDB = async () => {
+  // Location fetching function
+  const fetchUserLocation = async () => {
     try {
-      const { data, error } = await supabase
-        .from('users')
-        .select('name, latitude, longitude')
-        .order('created_at', { ascending: false })
-        .limit(1);
-
-      if (error) {
-        console.log('Supabase error:', error);
+      console.log('📍 Fetching user location...');
+      setLocationLoading(true);
+      
+      // Request location permissions
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        console.log('❌ Location permission denied');
+        setLocationName('India'); // Fallback to India
         return;
       }
 
-      if (data && data.length > 0) {
-        const { latitude, longitude } = data[0];
-        setUserLocation({ lat: latitude, lon: longitude });
-        console.log('🌍 User location loaded:', { lat: latitude, lon: longitude });
+      // Get current position with timeout and error handling
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+        timeout: 10000, // 10 second timeout
+        maximumAge: 300000, // Accept cached location up to 5 minutes old
+      });
+
+      console.log('📍 Location coordinates:', location.coords);
+      setUserLocation(location.coords);
+
+      // Reverse geocode to get readable address
+      const reverseGeocode = await Location.reverseGeocodeAsync({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      });
+
+      if (reverseGeocode.length > 0) {
+        const address = reverseGeocode[0];
+        console.log('📍 Reverse geocoded address:', address);
+        
+        // Create a readable location string
+        let locationString = '';
+        if (address.subregion) locationString += address.subregion;
+        if (address.region) {
+          locationString += locationString ? `, ${address.region}` : address.region;
+        }
+        if (address.country) {
+          locationString += locationString ? `, ${address.country}` : address.country;
+        }
+        
+        if (!locationString) locationString = 'India';
+        
+        console.log('📍 Final location string:', locationString);
+        setLocationName(locationString);
+      } else {
+        setLocationName('India');
       }
-    } catch (err) {
-      console.log('Error fetching user location:', err);
+    } catch (error) {
+      console.error('❌ Error fetching location:', error);
+      
+      // Provide more specific error handling
+      if (error.message.includes('location services') || error.message.includes('unavailable')) {
+        console.log('💡 Location services are disabled or unavailable');
+        setLocationName('India'); // Fallback to India
+      } else if (error.message.includes('permission') || error.message.includes('denied')) {
+        console.log('💡 Location permission was denied');
+        setLocationName('India'); // Fallback to India
+      } else if (error.message.includes('timeout')) {
+        console.log('💡 Location request timed out');
+        setLocationName('India'); // Fallback to India
+      } else {
+        console.log('💡 Unknown location error, using fallback');
+        setLocationName('India'); // Fallback to India
+      }
+    } finally {
+      setLocationLoading(false);
     }
   };
 
-  const startPulseAnimation = () => {
+  // Enhanced Gemini-style animations
+  const startRecordingAnimation = () => {
+    // Scale up button with bounce
+    Animated.spring(scaleAnim, {
+      toValue: 1.15,
+      tension: 100,
+      friction: 8,
+      useNativeDriver: true,
+    }).start();
+
+    // Start glow effect
     Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, {
-          toValue: 1.2,
-          duration: 800,
+        Animated.timing(glowAnim, {
+          toValue: 1,
+          duration: 1000,
           useNativeDriver: true,
         }),
-        Animated.timing(pulseAnim, {
-          toValue: 1,
-          duration: 800,
+        Animated.timing(glowAnim, {
+          toValue: 0,
+          duration: 1000,
           useNativeDriver: true,
         }),
       ])
     ).start();
+
+    // Start pulsing animation
+    const pulseAnimation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1.4,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 600,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    pulseAnimation.start();
+
+    // Start wave animations with different speeds
+    const waveAnimation1 = Animated.loop(
+      Animated.sequence([
+        Animated.timing(waveAnim1, {
+          toValue: 1.2,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+        Animated.timing(waveAnim1, {
+          toValue: 0.3,
+          duration: 800,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    const waveAnimation2 = Animated.loop(
+      Animated.sequence([
+        Animated.timing(waveAnim2, {
+          toValue: 1.1,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+        Animated.timing(waveAnim2, {
+          toValue: 0.5,
+          duration: 1000,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    const waveAnimation3 = Animated.loop(
+      Animated.sequence([
+        Animated.timing(waveAnim3, {
+          toValue: 1,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+        Animated.timing(waveAnim3, {
+          toValue: 0.7,
+          duration: 1200,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    waveAnimation1.start();
+    waveAnimation2.start();
+    waveAnimation3.start();
   };
 
-  const stopPulseAnimation = () => {
+  const startProcessingAnimation = () => {
+    // Stop all other animations
     pulseAnim.stopAnimation();
-    Animated.timing(pulseAnim, {
-      toValue: 1,
-      duration: 200,
+    waveAnim1.stopAnimation();
+    waveAnim2.stopAnimation();
+    waveAnim3.stopAnimation();
+    glowAnim.stopAnimation();
+
+    // Scale down slightly for processing
+    Animated.spring(scaleAnim, {
+      toValue: 1.05,
       useNativeDriver: true,
     }).start();
+
+    // Start rotation animation
+    const rotateAnimation = Animated.loop(
+      Animated.timing(rotateAnim, {
+        toValue: 1,
+        duration: 1500,
+        useNativeDriver: true,
+      })
+    );
+    rotateAnimation.start();
   };
 
-  const startVoiceInput = () => {
-    if (isListening) {
-      // Stop listening and process current question
-      stopVoiceInput();
-      return;
+  const stopAllAnimations = () => {
+    // Reset all animations
+    pulseAnim.stopAnimation();
+    waveAnim1.stopAnimation();
+    waveAnim2.stopAnimation();
+    waveAnim3.stopAnimation();
+    rotateAnim.stopAnimation();
+    glowAnim.stopAnimation();
+
+    Animated.parallel([
+      Animated.spring(scaleAnim, {
+        toValue: 1,
+        tension: 100,
+        friction: 8,
+        useNativeDriver: true,
+      }),
+      Animated.timing(pulseAnim, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(rotateAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(glowAnim, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  };
+
+  const setupAudioSession = async () => {
+    // Only set up once and track state
+    if (audioSessionReady) {
+      console.log('✅ Audio session already ready');
+      return true;
     }
 
-    setTranscription('');
-    setResponse('');
-    setIsListening(true);
-    setIsRecording(true);
-    startPulseAnimation();
-
-    // Get current question from cycle
-    const currentQuestion = voiceQuestions[currentQuestionIndex];
-    console.log(`🎤 Voice activated - Ready for Question ${currentQuestionIndex + 1}: ${currentQuestion}`);
-    
-    // Don't show the question yet - just start listening
-  };
-
-  const stopVoiceInput = () => {
-    if (!isListening) return;
-
-    setIsListening(false);
-    setIsRecording(false);
-    stopPulseAnimation();
-
-    // Get current question and show it now
-    const currentQuestion = voiceQuestions[currentQuestionIndex];
-    console.log(`🎤 Processing voice question: ${currentQuestion}`);
-    
-    // Now show the question that will be processed
-    setTranscription(`Voice Question ${currentQuestionIndex + 1}: ${currentQuestion}`);
-    setIsProcessing(true);
-    processWithGemini(currentQuestion);
-
-    // Move to next question for next time
-    setCurrentQuestionIndex((prev) => (prev + 1) % voiceQuestions.length);
-  };
-
-  const handleSubmitInput = () => {
-    if (inputText.trim()) {
-      setTranscription(inputText.trim());
-      setIsProcessing(true);
-      setShowInputModal(false);
-      setIsRecording(false);
-      stopPulseAnimation();
-      processWithGemini(inputText.trim());
-    }
-  };
-
-  const handleCommonQuestion = (question) => {
-    setTranscription(question);
-    setIsProcessing(true);
-    processWithGemini(question);
-  };
-
-  const getTimeBasedGreeting = () => {
-    const currentHour = new Date().getHours();
-    
- 
-  };
-
-  const processWithGemini = async (text) => {
     try {
-      console.log('🤖 Processing question with AI:', text);
+      console.log('🔧 Setting up audio session...');
       
-      // Use stored location or try to get current location
-      let location = userLocation;
-      if (!location) {
-        try {
-          const { status } = await Location.requestForegroundPermissionsAsync();
-          if (status === 'granted') {
-            const currentLocation = await Location.getCurrentPositionAsync({});
-            location = {
-              lat: currentLocation.coords.latitude,
-              lon: currentLocation.coords.longitude
-            };
-            setUserLocation(location);
+      // First ensure we have permissions
+      if (!permissionResponse?.granted) {
+        console.log('❌ No audio permissions granted');
+        return false;
+      }
+
+      // Basic audio session setup - minimal configuration that should work
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        playsInSilentModeIOS: true,
+        staysActiveInBackground: false,
+        shouldDuckAndroid: true,
+        playThroughEarpieceAndroid: false,
+      });
+      
+      setAudioSessionReady(true);
+      console.log('✅ Audio session setup successful');
+      return true;
+    } catch (err) {
+      console.error('❌ Error setting up audio session:', err?.message || String(err));
+      setAudioSessionReady(false);
+      return false;
+    }
+  };
+
+  // Handle back button press (both software and hardware)
+  const handleBackPress = async () => {
+    console.log('🔙 Back button pressed (hardware/software)');
+    
+    // Stop speech immediately if currently speaking
+    if (isSpeaking) {
+      try {
+        console.log('🔇 Stopping speech due to back navigation...');
+        await Speech.stop();
+        setIsSpeaking(false);
+        console.log('✅ Speech stopped successfully');
+      } catch (e) {
+        console.error('❌ Error stopping speech on navigation:', e);
+      }
+    }
+    
+    // Stop any ongoing recording
+    if (isRecording || isCurrentlyRecording.current) {
+      try {
+        console.log('🛑 Stopping recording due to back navigation...');
+        await forceCleanupAllRecordings();
+        console.log('✅ Recording stopped successfully');
+      } catch (e) {
+        console.error('❌ Error stopping recording on navigation:', e);
+      }
+    }
+    
+    // Navigate back to home
+    navigation.navigate('Home');
+    return true; // Prevent default back action
+  };
+
+  useEffect(() => {
+    // Add hardware back button handler for Android
+    const backHandler = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
+    
+    // Request necessary permissions when component mounts
+    const setupAudio = async () => {
+      try {
+        console.log('🚀 Initializing Voice Assistant...');
+        setIsInitializing(true);
+        setError('');
+        
+        // Fetch user location first (in parallel with audio setup)
+        fetchUserLocation();
+        
+        // Request audio recording permissions first
+        console.log('🎤 Requesting audio permissions...');
+        if (!permissionResponse?.granted) {
+          const { status } = await Audio.requestPermissionsAsync();
+          if (status !== 'granted') {
+            console.log('❌ Audio permission denied');
+            setError('Microphone permission is required to use voice features.');
+            setIsInitializing(false);
+            return;
           }
-        } catch (locationError) {
-          console.log('Location not available:', locationError);
+          console.log('✅ Audio permission granted');
+        } else {
+          console.log('✅ Audio permission already granted');
+        }
+
+        // Set up audio mode
+        console.log('🔧 Setting up audio session...');
+        const success = await setupAudioSession();
+        if (!success) {
+          setError('Audio session setup failed. This is usually an iOS issue. Please completely close the app (swipe up and swipe away) and reopen it.');
+        } else {
+          console.log('✅ Voice Assistant ready!');
+        }
+        
+        setIsInitializing(false);
+      } catch (err) {
+        console.error('❌ Error setting up audio:', err?.message || String(err));
+        setError('Failed to set up audio. Please close and reopen the app.');
+        setIsInitializing(false);
+      }
+    };
+
+    setupAudio();
+
+    // Clean up on unmount
+    return () => {
+      console.log('🧹 Component unmounting - cleaning up...');
+      
+      // Remove hardware back button handler
+      backHandler.remove();
+      
+      // Stop speech if currently speaking
+      if (isSpeaking) {
+        Speech.stop().catch(console.error);
+        console.log('🔇 Speech stopped on component unmount');
+      }
+      
+      // Force cleanup all recordings
+      forceCleanupAllRecordings().catch(console.error);
+      
+      // Reset audio mode when component unmounts
+      if (audioSessionReady) {
+        Audio.setAudioModeAsync({
+          allowsRecordingIOS: false,
+          playsInSilentModeIOS: false,
+          staysActiveInBackground: false,
+        }).catch(console.error);
+      }
+    };
+  }, [permissionResponse]);
+
+  // Simple cleanup function (keeping the UI improvements)
+  const forceCleanupAllRecordings = async () => {
+    console.log('🧹 FORCE cleaning all recordings...');
+    
+    try {
+      // Stop any existing recording objects
+      if (currentRecording.current) {
+        console.log('🛑 Force stopping current recording...');
+        await currentRecording.current.stopAndUnloadAsync();
+      }
+    } catch (e) {
+      console.log('⚠ Error stopping current recording (expected):', e?.message);
+    }
+
+    try {
+      if (recording) {
+        console.log('🛑 Force stopping state recording...');
+        await recording.stopAndUnloadAsync();
+      }
+    } catch (e) {
+      console.log('⚠ Error stopping state recording (expected):', e?.message);
+    }
+
+    // Reset everything
+    currentRecording.current = null;
+    setRecording(null);
+    isCurrentlyRecording.current = false;
+    setIsRecording(false);
+    setProcessing(false);
+    
+    console.log('✅ Force cleanup complete');
+  };
+
+  const handleRecordingToggle = async () => {
+    console.log('🎯 Toggle pressed - isRecording:', isRecording, 'isCurrentlyRecording:', isCurrentlyRecording.current, 'processing:', processing);
+    
+    // If currently speaking, stop speech immediately
+    if (isSpeaking) {
+      console.log('🔇 Stopping speech...');
+      try {
+        await Speech.stop();
+        setIsSpeaking(false);
+      } catch (e) {
+        console.error('Error stopping speech:', e);
+      }
+    }
+
+    if (isRecording || isCurrentlyRecording.current) {
+      // STOP recording - immediate UI feedback
+      console.log('🛑 STOPPING recording immediately...');
+      setIsRecording(false);
+      isCurrentlyRecording.current = false;
+      stopAllAnimations();
+      
+      // Set processing immediately to prevent multiple taps
+      setProcessing(true);
+      
+      // Process the recording in background with timeout
+      const stopPromise = stopRecording();
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Stop recording timeout')), 45000)
+      );
+      
+      Promise.race([stopPromise, timeoutPromise]).catch(err => {
+        console.error('❌ Error in stopRecording or timeout:', err);
+        setError('Recording processing timed out. Please try again.');
+        
+        // Force cleanup on timeout
+        forceCleanupAllRecordings().finally(() => {
+          setProcessing(false);
+        });
+      });
+      
+    } else {
+      // START recording - simplified condition
+      console.log('🎤 Attempting to start recording...');
+      if (processing) {
+        console.log('⚠ Cannot start - currently processing');
+        return;
+      }
+      
+      await startRecording();
+    }
+  };
+
+  const startRecording = async () => {
+    try {
+      console.log('🎙 Starting recording...');
+      
+      // Prevent multiple recordings
+      if (isCurrentlyRecording.current || isRecording) {
+        console.log('⚠ Recording already in progress, skipping...');
+        return;
+      }
+
+      // Check permissions
+      if (!permissionResponse?.granted) {
+        console.log('❌ No permissions for recording');
+        setError('Microphone permission required');
+        return;
+      }
+
+      // Check if audio session is ready
+      if (!audioSessionReady) {
+        console.log('❌ Audio session not ready - setting up now...');
+        const success = await setupAudioSession();
+        if (!success) {
+          setError('Failed to setup audio session. Please try again.');
+          return;
         }
       }
 
-      // Get soil analysis if we have location
-      let soil = soilInfo;
-      if (location && !soil) {
-        console.log('🌱 Analyzing soil with Gemini AI...');
-        soil = await getSoilAnalysisFromGemini(location.lat, location.lon);
-        console.log('🌾 Soil analysis received:', soil);
-        setSoilInfo(soil);
+      // Clean up any existing recordings first
+      await forceCleanupAllRecordings();
+
+      // Set flags
+      isCurrentlyRecording.current = true;
+      setIsRecording(true);
+      setError('');
+      startRecordingAnimation();
+
+      console.log('🎤 Creating new recording...');
+      
+      // Create new recording with better options
+      const recordingOptions = {
+        android: {
+          extension: '.m4a',
+          outputFormat: Audio.RECORDING_OPTION_ANDROID_OUTPUT_FORMAT_MPEG_4,
+          audioEncoder: Audio.RECORDING_OPTION_ANDROID_AUDIO_ENCODER_AAC,
+          sampleRate: 44100,
+          numberOfChannels: 2,
+          bitRate: 128000,
+        },
+        ios: {
+          extension: '.m4a',
+          outputFormat: Audio.RECORDING_OPTION_IOS_OUTPUT_FORMAT_MPEG4AAC,
+          audioQuality: Audio.RECORDING_OPTION_IOS_AUDIO_QUALITY_HIGH,
+          sampleRate: 44100,
+          numberOfChannels: 2,
+          bitRate: 128000,
+          linearPCMBitDepth: 16,
+          linearPCMIsBigEndian: false,
+          linearPCMIsFloat: false,
+        },
+      };
+
+      const { recording: newRecording } = await Audio.Recording.createAsync(recordingOptions);
+
+      // Store recording
+      currentRecording.current = newRecording;
+      setRecording(newRecording);
+      
+      console.log('✅ Recording started successfully');
+    } catch (err) {
+      console.error('❌ Error starting recording:', err?.message || String(err));
+      
+      // Reset flags on error
+      isCurrentlyRecording.current = false;
+      setIsRecording(false);
+      stopAllAnimations();
+      
+      // Better error handling
+      if (err?.message?.includes('Only one Recording object')) {
+        setError('Recording conflict detected. Please wait a moment and try again.');
+        await forceCleanupAllRecordings();
+      } else if (err?.message?.includes('Session activation failed') || err?.message?.includes('561017449')) {
+        setError('Audio session error. Please close and restart the app.');
+      } else if (err?.message?.includes('permission')) {
+        setError('Microphone permission denied. Please enable it in settings.');
+      } else {
+        setError(`Recording failed: ${err?.message || 'Unknown error'}. Please try again.`);
+      }
+    }
+  };
+
+  const stopRecording = async () => {
+    try {
+      console.log('🛑 Stop recording called...');
+      
+      if (!currentRecording.current) {
+        console.log('⚠ No recording to stop');
+        isCurrentlyRecording.current = false;
+        setProcessing(false);
+        return;
       }
 
-      // Create comprehensive context with soil and location data
-      const context = `
-        LOCATION: ${soil?.country || "Unknown"}, ${soil?.region || "Unknown"} (${location ? `${location.lat}, ${location.lon}` : "Unknown"})
-        SOIL: ${soil?.type || "Unknown"} | pH: ${soil?.ph || "Unknown"} | Climate: ${soil?.climate || "Unknown"}
-        COMPOSITION: Clay ${soil?.clay || "?"} | Sand ${soil?.sand || "?"} | Silt ${soil?.silt || "?"} | Nitrogen ${soil?.nitrogen || "?"}
+      // Prevent multiple calls
+      if (processing && !isCurrentlyRecording.current) {
+        console.log('⚠ Already processing, skipping duplicate stop call');
+        return;
+      }
+
+      startProcessingAnimation();
+
+      // Stop and get the recording URI
+      console.log('📁 Stopping and saving recording...');
+      await currentRecording.current.stopAndUnloadAsync();
+      const uri = currentRecording.current.getURI();
+      console.log('📁 Recording saved to:', uri);
+
+      // Clean up immediately
+      const recordingToProcess = currentRecording.current;
+      currentRecording.current = null;
+      setRecording(null);
+      isCurrentlyRecording.current = false;
+
+      if (!uri) {
+        throw new Error('No audio was recorded');
+      }
+
+      // Verify file exists and has content
+      let fileInfo;
+      try {
+        fileInfo = await FileSystem.getInfoAsync(uri);
+        console.log('📁 File info:', fileInfo);
+        if (!fileInfo.exists || fileInfo.size === 0) {
+          throw new Error('Recording file is empty or does not exist');
+        }
+      } catch (fileError) {
+        console.error('❌ File verification error:', fileError);
+        throw new Error('Recording file could not be verified');
+      }
+
+      // Process the audio with timeout
+      console.log('🤖 Processing audio with AI...');
+      console.log('📊 Audio file details:');
+      console.log('- URI:', uri);
+      console.log('- File size:', fileInfo?.size || 'unknown', 'bytes');
+      console.log('- Location context:', locationHint);
+      
+      let text;
+      try {
+        // Add timeout to prevent hanging
+        const aiPromise = generateVoiceAnswerFromAudio(uri, {
+          location: locationHint,
+          language: 'en-IN'
+        });
         
-        QUESTION: ${text}
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('AI processing timeout')), 30000)
+        );
         
-        INSTRUCTIONS:
-        - Give a direct, focused answer to the farmer's question
-        - Use simple, clear language (avoid technical jargon)
-        - Provide 3-5 specific, actionable points
-        - Consider the soil type, pH, and local climate in your advice
-        - Format response with bullet points for easy reading
-        - Keep each point under 25 words
-        - Be practical and cost-effective for small farmers
-        - Include location-specific recommendations
-      `;
+        const result = await Promise.race([aiPromise, timeoutPromise]);
+        text = result.text;
+        
+        console.log('✅ AI response received:', text);
+        setLastText(text);
+      } catch (aiError) {
+        console.error('❌ AI processing error:', aiError);
+        
+        // Enhanced error logging for debugging
+        console.error('📊 Error details:');
+        console.error('- Error type:', aiError.constructor.name);
+        console.error('- Error message:', aiError.message);
+        console.error('- Audio URI:', uri);
+        console.error('- File exists:', fileInfo?.exists || 'unknown');
+        console.error('- File size:', fileInfo?.size || 'unknown');
+        
+        // Check if it's the specific Gemini API error
+        if (aiError.message.includes('invalid argument')) {
+          text = 'Audio format issue detected. Please try recording again with a shorter message.';
+          console.log('💡 Suggestion: Try recording a shorter audio clip (5-10 seconds)');
+        } else if (aiError.message.includes('quota') || aiError.message.includes('limit')) {
+          text = 'API limit reached. Please try again in a few minutes.';
+        } else if (aiError.message.includes('network') || aiError.message.includes('fetch')) {
+          text = 'Network error. Please check your internet connection and try again.';
+        } else {
+          text = 'Sorry, I had trouble processing your request. Please try recording again.';
+        }
+        
+        setLastText(text);
+      }
 
-      console.log('📤 Sending context to Gemini...');
-      const rawResponse = await generateChatResponse(context, [], language);
-      
-      // Format the response
-      const formattedResponse = formatGeminiResponse(rawResponse);
-      
-      setResponse(formattedResponse);
-      setIsProcessing(false);
-      
-      // Speak the response
-      speakResponse(formattedResponse);
-      
-    } catch (error) {
-      console.error('Failed to process with Gemini:', error);
-      const errorMessage = "Sorry, I couldn't process your request. Please try again.";
-      setResponse(errorMessage);
-      setIsProcessing(false);
-      speakResponse(errorMessage);
-    }
-  };
-
-  // Format Gemini response for better readability
-  const formatGeminiResponse = (response) => {
-    if (!response) return response;
-    
-    let formatted = response
-      // Remove ALL asterisks and markdown formatting
-      .replace(/\*\*(.*?)\*\*/g, '$1')  // Remove ** bold markers
-      .replace(/\*(.*?)\*/g, '$1')      // Remove * italic markers
-      .replace(/\*/g, '')               // Remove any remaining asterisks
-      .replace(/#{1,6}\s*/g, '')        // Remove # headers
-      .replace(/`{1,3}(.*?)`{1,3}/g, '$1') // Remove code backticks
-      
-      // Improve bullet points
-      .replace(/^[\s]*[-•]\s*/gm, '🌱 ') // Use plant emoji for bullets
-      .replace(/^\d+\.\s*/gm, '🌱 ')     // Convert numbers to plant bullets
-      
-      // Clean up spacing and formatting
-      .replace(/\n{3,}/g, '\n\n')       // Remove excessive line breaks
-      .replace(/^\s+/gm, '')            // Remove leading spaces
-      .replace(/\s+$/gm, '')            // Remove trailing spaces
-      .trim();
-    
-    return formatted;
-  };
-
-  const speakResponse = async (text) => {
-    try {
+      // Speak the response with timeout
+      console.log('🔊 Speaking response...');
       setIsSpeaking(true);
-      console.log('🔊 Speaking response with female voice:', text);
       
-      // Use expo-speech with female voice settings
-      const speechLanguage = language === 'hi' ? 'hi-IN' : 
-                           language === 'te' ? 'te-IN' : 
-                           language === 'ta' ? 'ta-IN' : 'en-US';
+      try {
+        // Add timeout for speech as well
+        const speechPromise = new Promise((resolve, reject) => {
+          Speech.speak(text, {
+            language: 'en-IN',
+            rate: 0.85,
+            pitch: 1.2,
+            voice: Platform.OS === 'ios' ? 'com.apple.ttsbundle.Samantha-compact' : undefined,
+            onStart: () => {
+              console.log('🔊 Speech started');
+              setIsSpeaking(true);
+            },
+            onDone: () => {
+              console.log('🔊 Speech completed');
+              setIsSpeaking(false);
+              resolve();
+            },
+            onError: (e) => {
+              console.error('❌ Speech error:', e?.message || String(e));
+              setIsSpeaking(false);
+              reject(e);
+            }
+          });
+        });
+        
+        const speechTimeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Speech timeout')), 15000)
+        );
+        
+        await Promise.race([speechPromise, speechTimeoutPromise]);
+      } catch (speechError) {
+        console.error('❌ Speech error or timeout:', speechError);
+        setIsSpeaking(false);
+      }
+
+    } catch (err) {
+      console.error('❌ Error processing recording:', err?.message || String(err));
       
-      await Speech.speak(text, {
-        language: speechLanguage,
-        pitch: 1.2,  // Higher pitch for female voice
-        rate: 0.8,   // Moderate rate for clarity
-        quality: Speech.QUALITY_ENHANCED,
-        onDone: () => {
-          console.log('🔊 Speech completed');
-          setIsSpeaking(false);
-        },
-        onStopped: () => {
-          console.log('🔊 Speech stopped');
-          setIsSpeaking(false);
-        },
-        onError: (error) => {
-          console.error('🔊 Speech error:', error);
-          setIsSpeaking(false);
-        },
-      });
+      // More specific error messages
+      if (err?.message?.includes('API key')) {
+        setError('AI service configuration error. Please check your settings.');
+      } else if (err?.message?.includes('network') || err?.message?.includes('fetch')) {
+        setError('Network error. Please check your internet connection and try again.');
+      } else if (err?.message?.includes('empty') || err?.message?.includes('not exist')) {
+        setError('Recording was empty. Please try speaking again.');
+      } else {
+        setError(`Sorry, I had trouble processing that. ${err?.message || 'Please try again.'}`);
+      }
+    } finally {
+      setProcessing(false);
+      stopAllAnimations();
       
-    } catch (error) {
-      console.error('Failed to speak response:', error);
-      setIsSpeaking(false);
+      // Final cleanup
+      currentRecording.current = null;
+      setRecording(null);
+      isCurrentlyRecording.current = false;
+
+      console.log('✅ Recording processing complete');
     }
   };
 
-  const stopSpeaking = () => {
-    Speech.stop();
-    setIsSpeaking(false);
-  };
-
-  const getStatusText = () => {
-    if (isListening) return `🎤 Ready! Tap again to ask question ${currentQuestionIndex + 1}`;
-    if (isProcessing) return "🤖 Processing your question...";
-    if (isSpeaking) return "🔊 AI is speaking...";
-    return `👋 Tap to start (Question ${currentQuestionIndex + 1} ready)`;
-  };
-
-  const getStatusColor = () => {
-    if (isRecording) return '#ef4444';
-    if (isProcessing) return '#f59e0b';
-    if (isSpeaking) return '#10b981';
-    return '#6b7280';
-  };
+  // Handle recording errors with better UX
+  useEffect(() => {
+    if (error) {
+      console.log('⚠ Showing error to user:', error);
+      Alert.alert(
+        'Voice Assistant',
+        error,
+        [
+          {
+            text: 'Try Again',
+            onPress: () => {
+              setError('');
+              console.log('🔄 User chose to try again');
+            }
+          },
+          {
+            text: 'OK',
+            onPress: () => {
+              setError('');
+              console.log('✅ Error dismissed');
+            }
+          }
+        ]
+      );
+    }
+  }, [error]);
 
   return (
-    <SafeAreaView style={styles.container}>
-      {/* Header Gradient */}
-      <LinearGradient
-        colors={['#0f172a', '#1e293b', '#334155']}
-        style={styles.headerGradient}
-      >
-        <View style={styles.header}>
+    <View style={styles.container}>
+      {/* Header with back button */}
+      <View style={styles.header}>
+        <TouchableOpacity 
+          style={styles.backButton}
+          onPress={handleBackPress}
+        >
+          <Text style={styles.backButtonText}>← Back</Text>
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Voice Assistant</Text>
+        <View style={styles.headerSpacer} />
+      </View>
+      
+      <Text style={styles.hint}>
+        {isRecording ? 'Tap anywhere to stop recording' : processing ? 'Processing...' : 'Tap to start recording'}
+      </Text>
+      
+      {/* Location display */}
+      <View style={styles.locationContainer}>
+        <Text style={styles.locationText}>
+          {locationLoading ? '📍 Getting your location...' : `📍 Location: ${locationName}`}
+        </Text>
+        {!locationLoading && (
           <TouchableOpacity 
-            style={styles.backButton}
+            style={styles.refreshLocationButton}
+            onPress={fetchUserLocation}
+          >
+            <Text style={styles.refreshLocationText}>🔄 Refresh</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+      
+      {!permissionResponse?.granted ? (
+        <View style={styles.permissionContainer}>
+          <Text style={styles.permissionText}>
+            🎤 Microphone permission is required to use the voice assistant.
+          </Text>
+          <TouchableOpacity
+            style={styles.permissionButton}
+            onPress={requestPermission}
+          >
+            <Text style={styles.permissionButtonText}>Grant Permission</Text>
+          </TouchableOpacity>
+        </View>
+      ) : isInitializing ? (
+        <View style={styles.initializingContainer}>
+          <ActivityIndicator size="large" color="#16a34a" />
+          <Text style={styles.initializingText}>🔧 Setting up voice assistant...</Text>
+        </View>
+      ) : error ? (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>❌ {error}</Text>
+          <TouchableOpacity
+            style={styles.retryButton}
             onPress={() => {
-              // Stop any ongoing speech
-              Speech.stop();
-              setIsSpeaking(false);
-              navigation.goBack();
+              setError('');
+              setIsInitializing(true);
+              // Retry setup
+              setTimeout(async () => {
+                const success = await setupAudioSession();
+                if (!success) {
+                  setError('Audio session setup failed. Please completely close and reopen the app.');
+                }
+                setIsInitializing(false);
+              }, 100);
             }}
           >
-            <ChevronLeftIcon width={24} height={24} color="#e2e8f0" />
+            <Text style={styles.retryButtonText}>🔄 Retry</Text>
           </TouchableOpacity>
-          <View style={styles.headerCenter}>
-            <Text style={styles.headerGreeting}>{getTimeBasedGreeting()}</Text>
-            <Text style={styles.headerText}>🎙️ Voice Assistant</Text>
-          </View>
-       
         </View>
-      </LinearGradient>
-
-      {/* Main Content */}
-      <ScrollView 
-        style={styles.scrollView} 
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Status Display */}
-        <View style={styles.statusContainer}>
-          <Text style={[styles.statusText, { color: getStatusColor() }]}>
-            {getStatusText()}
+      ) : (
+        <View style={styles.contentContainer}>
+          {/* Status text */}
+          <Text style={styles.statusText}>
+            {isRecording
+              ? '🎙 Recording... Tap anywhere to stop'
+              : processing
+              ? '🤖 Processing your request...'
+              : isSpeaking
+              ? '🔊 Speaking... Tap to interrupt'
+              : '🎤 Ready to listen - Ask for location-specific farming advice!'}
           </Text>
-          {soilInfo && (
-            <View style={styles.soilInfoContainer}>
-              <Text style={styles.soilInfoText}>
-                📍 {soilInfo.region}, {soilInfo.country} | 🌍 {soilInfo.type} soil | pH: {soilInfo.ph}
-              </Text>
+
+          {/* Enhanced button container - entire area is tappable */}
+          <TouchableOpacity 
+            style={styles.micContainer}
+            onPress={handleRecordingToggle}
+            disabled={false} // Always allow interaction for interruption
+            activeOpacity={0.9}
+          >
+            {/* Outer wave rings - only show when recording */}
+            {isRecording && (
+              <>
+                <Animated.View
+                  style={[
+                    styles.waveRing,
+                    styles.waveRing1,
+                    {
+                      opacity: waveAnim1.interpolate({
+                        inputRange: [0.3, 1.2],
+                        outputRange: [0.2, 0.8],
+                      }),
+                      transform: [{ scale: waveAnim1 }],
+                    },
+                  ]}
+                />
+                <Animated.View
+                  style={[
+                    styles.waveRing,
+                    styles.waveRing2,
+                    {
+                      opacity: waveAnim2.interpolate({
+                        inputRange: [0.5, 1.1],
+                        outputRange: [0.15, 0.6],
+                      }),
+                      transform: [{ scale: waveAnim2 }],
+                    },
+                  ]}
+                />
+                <Animated.View
+                  style={[
+                    styles.waveRing,
+                    styles.waveRing3,
+                    {
+                      opacity: waveAnim3.interpolate({
+                        inputRange: [0.7, 1],
+                        outputRange: [0.1, 0.4],
+                      }),
+                      transform: [{ scale: waveAnim3 }],
+                    },
+                  ]}
+                />
+              </>
+            )}
+
+            {/* Glow effect for recording */}
+            {isRecording && (
+              <Animated.View
+                style={[
+                  styles.glowRing,
+                  {
+                    opacity: glowAnim.interpolate({
+                      inputRange: [0, 1],
+                      outputRange: [0.3, 0.8],
+                    }),
+                  },
+                ]}
+              />
+            )}
+
+            {/* Main button */}
+            <Animated.View
+              style={[
+                {
+                  transform: [
+                    { scale: scaleAnim },
+                    {
+                      rotate: rotateAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: ['0deg', '360deg'],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            >
+              <View
+                style={[
+                  styles.micButton,
+                  isRecording && styles.micRecording,
+                  processing && styles.micProcessing,
+                  isSpeaking && styles.micSpeaking,
+                ]}
+              >
+                {processing ? (
+                  <View style={styles.processingContainer}>
+                    <ActivityIndicator color="#fff" size="large" />
+                    <Text style={styles.processingText}>AI</Text>
+                  </View>
+                ) : (
+                  <Text style={styles.micText}>
+                    {isRecording ? '🛑' : isSpeaking ? '🔊' : '🎤'}
+                  </Text>
+                )}
+              </View>
+            </Animated.View>
+
+            {/* Pulse effect for recording */}
+            {isRecording && (
+              <Animated.View
+                style={[
+                  styles.pulseRing,
+                  {
+                    transform: [{ scale: pulseAnim }],
+                    opacity: pulseAnim.interpolate({
+                      inputRange: [1, 1.4],
+                      outputRange: [0.6, 0],
+                    }),
+                  },
+                ]}
+              />
+            )}
+          </TouchableOpacity>
+
+          {!!lastText && (
+            <View style={styles.card}>
+              <Text style={styles.cardTitle}>🤖 AI Response</Text>
+              <ScrollView 
+                style={styles.scrollableTextContainer}
+                showsVerticalScrollIndicator={true}
+                nestedScrollEnabled={true}
+              >
+                <Text style={styles.cardText}>{lastText}</Text>
+              </ScrollView>
             </View>
           )}
         </View>
-
-        {/* Voice Button */}
-        <View style={styles.voiceButtonContainer}>
-          <Animated.View style={[styles.voiceButtonWrapper, { transform: [{ scale: pulseAnim }] }]}>
-            <LinearGradient
-              colors={isRecording ? ['#ef4444', '#dc2626'] : ['#16a34a', '#15803d']}
-              style={styles.voiceButton}
-            >
-              <TouchableOpacity
-                style={styles.voiceButtonTouch}
-                onPress={isRecording ? stopVoiceInput : startVoiceInput}
-                disabled={isProcessing || isSpeaking}
-              >
-                {isRecording ? (
-                  <StopIcon width={60} height={60} color="#ffffff" />
-                ) : (
-                  <MicIcon width={60} height={60} color="#ffffff" />
-                )}
-              </TouchableOpacity>
-            </LinearGradient>
-          </Animated.View>
-        </View>
-
-        {/* Common Questions */}
-        {!transcription && !response && !isProcessing && (
-          <View style={styles.commonQuestionsContainer}>
-            <Text style={styles.commonQuestionsTitle}>Quick Questions:</Text>
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              style={styles.commonQuestionsScroll}
-            >
-              {commonQuestions.slice(0, 6).map((question, index) => (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.commonQuestionButton}
-                  onPress={() => handleCommonQuestion(question)}
-                >
-                  <Text style={styles.commonQuestionText}>{question}</Text>
-                </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* Transcription Display */}
-        {transcription ? (
-          <View style={styles.transcriptionContainer}>
-            <Text style={styles.transcriptionLabel}>You asked:</Text>
-            <Text style={styles.transcriptionText}>{transcription}</Text>
-          </View>
-        ) : null}
-
-        {/* Response Display */}
-        {response ? (
-          <View style={styles.responseContainer}>
-            <Text style={styles.responseLabel}>AI Response:</Text>
-            <Text style={styles.responseText}>{response}</Text>
-            {isSpeaking && (
-              <TouchableOpacity style={styles.stopSpeakingButton} onPress={stopSpeaking}>
-                <Text style={styles.stopSpeakingText}>🔇 Stop Speaking</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        ) : null}
-
-        {/* Instructions */}
-        <View style={styles.instructionsContainer}>
-          <Text style={styles.instructionsTitle}>How to use:</Text>
-          <Text style={styles.instructionsText}>
-            • First tap: Start listening (red pulse){'\n'}
-            • Second tap: Ask current question to AI{'\n'}
-            • Questions cycle automatically (1→2→3...){'\n'}
-            • Listen to responses with female voice{'\n'}
-            • Or use quick question buttons above
-          </Text>
-          <Text style={styles.noteText}>
-            🎤 Two-tap system! First tap = ready, second tap = ask question and get AI answer.
-          </Text>
-        </View>
-      </ScrollView>
-
-    </SafeAreaView>
+      )}
+    </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#f1f5f9',
-  },
-  headerGradient: {
-    paddingTop: 50,
-    paddingBottom: 30,
-    borderBottomLeftRadius: 30,
-    borderBottomRightRadius: 30,
+  container: { 
+    flex: 1, 
+    backgroundColor: '#f8fafc', 
+    paddingTop: Platform.OS === 'ios' ? 50 : 20,
   },
   header: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
+    paddingVertical: 15,
+    backgroundColor: '#ffffff',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+    marginBottom: 20,
   },
   backButton: {
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    padding: 12,
-    borderRadius: 16,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: '#f1f5f9',
   },
-  headerCenter: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  headerGreeting: {
+  backButtonText: {
     fontSize: 16,
-    color: '#cbd5e1',
-    marginBottom: 4,
+    fontWeight: '600',
+    color: '#475569',
   },
-  headerText: {
-    fontSize: 28,
-    fontWeight: 'bold',
-    color: '#ffffff',
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#1e293b',
+    textAlign: 'center',
   },
-  settingsButton: {
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    padding: 12,
-    borderRadius: 16,
+  headerSpacer: {
+    width: 60, // Same width as back button to center the title
   },
-  scrollView: {
+  contentContainer: {
     flex: 1,
+    paddingHorizontal: 20,
+    justifyContent: 'center',
   },
-  content: {
-    padding: 20,
-    alignItems: 'center',
-    minHeight: '100%',
-  },
-  statusContainer: {
-    marginTop: 40,
-    marginBottom: 60,
-    alignItems: 'center',
+  hint: { 
+    fontSize: 16, 
+    color: '#64748b', 
+    textAlign: 'center', 
+    marginBottom: 20,
+    fontWeight: '500',
   },
   statusText: {
     fontSize: 18,
+    color: '#475569',
+    textAlign: 'center',
+    marginBottom: 30,
     fontWeight: '600',
-    textAlign: 'center',
+    letterSpacing: 0.5,
   },
-  soilInfoContainer: {
-    marginTop: 10,
-    backgroundColor: '#f0fdf4',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 15,
-    borderWidth: 1,
-    borderColor: '#bbf7d0',
-  },
-  soilInfoText: {
-    fontSize: 12,
-    color: '#16a34a',
-    textAlign: 'center',
-    fontWeight: '500',
-  },
-  voiceButtonContainer: {
+  micContainer: {
     alignItems: 'center',
-    marginBottom: 40,
+    justifyContent: 'center',
+    height: 220,
+    marginBottom: 30,
   },
-  voiceButtonWrapper: {
-    borderRadius: 100,
-    elevation: 10,
+  micButton: {
+    width: 130,
+    height: 130,
+    borderRadius: 65,
+    backgroundColor: '#10b981',
+    justifyContent: 'center',
+    alignItems: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.3,
-    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.25,
+    shadowRadius: 16,
+    elevation: 12,
+    zIndex: 10,
+    borderWidth: 3,
+    borderColor: '#ffffff',
   },
-  voiceButton: {
+  micRecording: { 
+    backgroundColor: '#ef4444',
+    shadowColor: '#ef4444',
+    shadowOpacity: 0.4,
+  },
+  micProcessing: {
+    backgroundColor: '#3b82f6',
+    shadowColor: '#3b82f6',
+    shadowOpacity: 0.4,
+  },
+  micSpeaking: {
+    backgroundColor: '#8b5cf6',
+    shadowColor: '#8b5cf6',
+    shadowOpacity: 0.4,
+  },
+  micText: { 
+    color: '#fff', 
+    fontWeight: '600',
+    fontSize: 36,
+  },
+  processingContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  processingText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 4,
+    letterSpacing: 1,
+  },
+  // Enhanced Gemini-style wave rings
+  waveRing: {
+    position: 'absolute',
+    borderRadius: 150,
+    borderWidth: 2.5,
+  },
+  waveRing1: {
+    width: 180,
+    height: 180,
+    borderColor: '#10b981',
+  },
+  waveRing2: {
+    width: 220,
+    height: 220,
+    borderColor: '#34d399',
+  },
+  waveRing3: {
+    width: 260,
+    height: 260,
+    borderColor: '#6ee7b7',
+  },
+  // Glow ring for enhanced recording effect
+  glowRing: {
+    position: 'absolute',
     width: 160,
     height: 160,
     borderRadius: 80,
-    justifyContent: 'center',
-    alignItems: 'center',
+    backgroundColor: '#10b981',
+    zIndex: 5,
   },
-  voiceButtonTouch: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 80,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  transcriptionContainer: {
-    backgroundColor: '#ffffff',
-    padding: 20,
-    borderRadius: 15,
-    marginBottom: 20,
-    width: '100%',
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 3,
-  },
-  transcriptionLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#6b7280',
-    marginBottom: 8,
-  },
-  transcriptionText: {
-    fontSize: 16,
-    color: '#1f2937',
-    lineHeight: 22,
-  },
-  responseContainer: {
-    backgroundColor: '#f0fdf4',
-    padding: 20,
-    borderRadius: 15,
-    marginBottom: 20,
-    width: '100%',
-    borderWidth: 1,
-    borderColor: '#bbf7d0',
-  },
-  responseLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#16a34a',
-    marginBottom: 8,
-  },
-  responseText: {
-    fontSize: 16,
-    color: '#1f2937',
-    lineHeight: 24,
-  },
-  stopSpeakingButton: {
+  // Enhanced pulse ring for recording
+  pulseRing: {
+    position: 'absolute',
+    width: 150,
+    height: 150,
+    borderRadius: 75,
     backgroundColor: '#ef4444',
-    paddingHorizontal: 15,
-    paddingVertical: 8,
-    borderRadius: 20,
-    marginTop: 10,
-    alignSelf: 'center',
+    zIndex: 5,
   },
-  stopSpeakingText: {
-    color: '#ffffff',
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  commonQuestionsContainer: {
-    marginBottom: 20,
-    width: '100%',
-  },
-  commonQuestionsTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1f2937',
-    marginBottom: 15,
-    textAlign: 'center',
-  },
-  commonQuestionsScroll: {
-    flexGrow: 0,
-  },
-  commonQuestionButton: {
-    backgroundColor: '#ffffff',
-    paddingHorizontal: 15,
-    paddingVertical: 12,
-    borderRadius: 20,
-    marginRight: 10,
+  card: { 
+    marginTop: 20,
+    backgroundColor: '#ffffff', 
+    borderRadius: 20, 
+    padding: 24, 
+    borderColor: '#e2e8f0', 
     borderWidth: 1,
-    borderColor: '#e5e7eb',
-    elevation: 2,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    minWidth: 200,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 12,
+    elevation: 4,
+    maxHeight: 200, // Limit height to make it scrollable
   },
-  commonQuestionText: {
-    fontSize: 14,
-    color: '#374151',
+  scrollableTextContainer: {
+    maxHeight: 120, // Limit the text area height
+    marginTop: 8,
+  },
+  cardTitle: { 
+    fontSize: 20, 
+    fontWeight: '700', 
+    color: '#1e293b', 
+    marginBottom: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#e2e8f0',
+    paddingBottom: 12,
+  },
+  cardText: { 
+    fontSize: 16, 
+    color: '#475569',
+    lineHeight: 26,
+    fontWeight: '400',
+  },
+  initializingContainer: {
+    alignItems: 'center',
+    padding: 30,
+    backgroundColor: '#f1f5f9',
+    borderRadius: 16,
+    marginTop: 20,
+  },
+  initializingText: {
+    color: '#475569',
     textAlign: 'center',
+    marginTop: 16,
+    fontSize: 16,
     fontWeight: '500',
   },
-  instructionsContainer: {
-    backgroundColor: '#f9fafb',
-    padding: 20,
-    borderRadius: 15,
-    width: '100%',
-    marginTop: 'auto',
-  },
-  instructionsTitle: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#1f2937',
-    marginBottom: 10,
-  },
-  instructionsText: {
-    fontSize: 14,
-    color: '#6b7280',
-    lineHeight: 20,
-    marginBottom: 10,
-  },
-  noteText: {
-    fontSize: 12,
-    color: '#9ca3af',
-    fontStyle: 'italic',
-    lineHeight: 16,
-  },
-  
-  // Modal Styles
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
+  permissionContainer: {
     alignItems: 'center',
-    padding: 20,
+    padding: 24,
+    backgroundColor: '#fef2f2',
+    borderRadius: 16,
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: '#fecaca',
   },
-  modalContent: {
-    backgroundColor: '#ffffff',
-    borderRadius: 20,
-    padding: 25,
-    width: '100%',
-    maxWidth: 400,
-    elevation: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 5 },
+  permissionText: {
+    color: '#dc2626',
+    textAlign: 'center',
+    marginBottom: 20,
+    fontSize: 16,
+    fontWeight: '500',
+    lineHeight: 24,
+  },
+  permissionButton: {
+    backgroundColor: '#dc2626',
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 12,
+    shadowColor: '#dc2626',
+    shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
-    shadowRadius: 10,
+    shadowRadius: 8,
+    elevation: 6,
   },
-  modalTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: '#1f2937',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  modalSubtitle: {
-    fontSize: 14,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginBottom: 20,
-  },
-  modalInput: {
-    borderWidth: 2,
-    borderColor: '#e5e7eb',
-    borderRadius: 15,
-    padding: 15,
+  permissionButtonText: {
+    color: '#fff',
+    fontWeight: '700',
     fontSize: 16,
-    minHeight: 100,
-    textAlignVertical: 'top',
-    marginBottom: 20,
-    backgroundColor: '#f9fafb',
+    letterSpacing: 0.5,
   },
-  modalButtons: {
+  errorContainer: {
+    alignItems: 'center',
+    padding: 24,
+    backgroundColor: '#fef2f2',
+    borderRadius: 16,
+    marginTop: 20,
+    borderWidth: 1,
+    borderColor: '#fecaca',
+  },
+  errorText: {
+    color: '#dc2626',
+    textAlign: 'center',
+    marginBottom: 20,
+    fontSize: 16,
+    fontWeight: '500',
+    lineHeight: 24,
+  },
+  retryButton: {
+    backgroundColor: '#dc2626',
+    paddingVertical: 14,
+    paddingHorizontal: 28,
+    borderRadius: 12,
+    shadowColor: '#dc2626',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontWeight: '700',
+    fontSize: 16,
+    letterSpacing: 0.5,
+  },
+  locationContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    gap: 15,
-  },
-  modalCancelButton: {
-    flex: 1,
-    backgroundColor: '#f3f4f6',
-    paddingVertical: 15,
-    borderRadius: 12,
     alignItems: 'center',
-  },
-  modalCancelText: {
-    color: '#6b7280',
-    fontWeight: '600',
-    fontSize: 16,
-  },
-  modalSubmitButton: {
-    flex: 1,
-    backgroundColor: '#16a34a',
-    paddingVertical: 15,
+    justifyContent: 'center',
+    marginBottom: 20,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    backgroundColor: '#f1f5f9',
     borderRadius: 12,
-    alignItems: 'center',
+    marginHorizontal: 20,
   },
-  modalSubmitDisabled: {
-    backgroundColor: '#d1d5db',
+  locationText: {
+    fontSize: 14,
+    color: '#475569',
+    fontWeight: '500',
+    flex: 1,
+    textAlign: 'center',
   },
-  modalSubmitText: {
-    color: '#ffffff',
+  refreshLocationButton: {
+    marginLeft: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: '#10b981',
+    borderRadius: 8,
+  },
+  refreshLocationText: {
+    color: '#fff',
+    fontSize: 12,
     fontWeight: '600',
-    fontSize: 16,
   },
 });
-
-export default VoiceAssistantScreen;
